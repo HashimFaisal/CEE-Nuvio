@@ -262,7 +262,7 @@ function resolveMetadata(parsed, type) {
     return Promise.resolve({ titles: [], year: null });
   }
   const tmdbId = String(parsed.tmdbId || '');
-  if (!/^\\d+$/.test(tmdbId)) return Promise.resolve({ titles: [], year: null });
+  if (!/^\d+$/.test(tmdbId)) return Promise.resolve({ titles: [], year: null });
 
   return cached('meta-' + kind + '-' + tmdbId, function () {
     const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
