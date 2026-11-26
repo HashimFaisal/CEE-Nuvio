@@ -11,7 +11,6 @@ const response = (data, ok, status) => ({
 
 async function main() {
   const originalFetch = global.fetch;
-  global.SCRAPER_SETTINGS = {};
   global.TMDB_API_KEY = 'test-key';
 
   global.fetch = async function (url) {
@@ -86,7 +85,7 @@ async function main() {
 
   try {
     const movie = await getStreams({ tmdbId: 'tt0133093', mediaType: 'movie' });
-    assert.deepStrictEqual(movie.map((item) => item.quality), ['1080p', '720p']);
+    assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 1080p', 'CEE · 720p']);
     assert.strictEqual(movie.length, 2, 'duplicate stream URLs must be removed');
     assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
       'CEE stream objects must match the Cinemana name/title/url schema');
@@ -113,8 +112,7 @@ async function main() {
     console.log('CEE provider tests passed');
   } finally {
     global.fetch = originalFetch;
-    delete global.SCRAPER_SETTINGS;
-    delete global.TMDB_API_KEY;
+        delete global.TMDB_API_KEY;
   }
 }
 
