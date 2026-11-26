@@ -5,7 +5,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 ## Provider details
 
 - Provider ID: `cee`
-- Version: `2.0.0`
+- Version: `2.0.1`
 - Author: `HashimFaisal`
 - Supported media: movies and TV series
 - CEE API: `https://cee.buzz/api/android`
