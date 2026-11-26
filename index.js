@@ -481,7 +481,7 @@ function buildStreams(files, details, videoId, type, season, episode) {
 
   files.forEach(function (file) {
     const url = normalizeUrl(file && (file.videoUrl || file.url));
-    if (!url || !/^https?:\\/\\//i.test(url) || seen.has(url)) return;
+    if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) return;
     seen.add(url);
 
     const quality = qualityLabel(file.resolution || file.name || file.container);
