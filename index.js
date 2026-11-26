@@ -464,7 +464,7 @@ function safeHeaderMap(value) {
     const headerValue = value[key];
     if (!name || typeof headerValue !== 'string') return;
     const cleanValue = headerValue.trim();
-    if (!cleanValue || /[\\r\\n]/.test(name) || /[\\r\\n]/.test(cleanValue)) return;
+    if (!cleanValue || /[\r\n]/.test(name) || /[\r\n]/.test(cleanValue)) return;
     headers[name] = cleanValue;
   });
   return Object.keys(headers).length ? headers : null;
