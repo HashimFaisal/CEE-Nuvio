@@ -545,16 +545,12 @@ function fetchStreams(type, id, season, episode) {
       : Promise.resolve(resolved.baseId);
     return videoIdPromise.then(function (videoId) {
       if (!videoId) return [];
-      return Promise.all([
-        getVideoFiles(videoId),
-        getDetails(videoId).catch(function (error) {
-          console.error('[CEE DETAILS]', error.message);
-          return null;
-        })
-      ]).then(function (results) {
-        const files = results[0] || [];
-        if (!files.length) return [];
-        return buildStreams(files, results[1], videoId, kind, targetSeason, targetEpisode);
+      // Playback needs the player file list only. The allVideoInfo endpoint
+      // is metadata (titles/subtitles) and is not used to construct stream URLs.
+      // Do not make playback wait for an unrelated request.
+      return getVideoFiles(videoId).then(function (files) {
+        if (!files || !files.length) return [];
+        return buildStreams(files, null, videoId, kind, targetSeason, targetEpisode);
       });
     });
   }).catch(function (error) {

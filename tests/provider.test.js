@@ -10,6 +10,7 @@ const response = (data, ok, status) => ({
 });
 
 async function main() {
+  let detailsRequests = 0;
   const originalFetch = global.fetch;
   global.TMDB_API_KEY = 'test-key';
 
@@ -69,6 +70,7 @@ async function main() {
     if (value.includes('/transcoddedFiles/id/203')) {
       return response([{ videoUrl: 'https://cdn.example/episode.mp4', resolution: '1080p', container: 'mp4' }]);
     }
+    if (value.includes('/allVideoInfo/')) detailsRequests++;
     if (value.includes('/allVideoInfo/id/10')) {
       return response({
         ar_title: 'الماتريكس',
@@ -87,6 +89,7 @@ async function main() {
     const movie = await getStreams({ tmdbId: 'tt0133093', mediaType: 'movie' });
     assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 1080p', 'CEE · 720p']);
     assert.strictEqual(movie.length, 2, 'duplicate stream URLs must be removed');
+    assert.strictEqual(detailsRequests, 0, 'playback resolution must not wait for unused allVideoInfo metadata');
     assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
       'CEE stream objects must match the Cinemana name/title/url schema');
 
@@ -116,6 +119,8 @@ async function main() {
       response: { 'Content-Type': 'video/mp4' }
     }, 'explicit playback request/response headers must be forwarded to Nuvio');
     global.fetch = originalFetchForHeaders;
+
+    assert.strictEqual(detailsRequests, 0, 'optional details endpoint must remain outside the playback path');
 
     const tmdbMovie = await getStreams({ tmdbId: 603, mediaType: 'movie' });
     assert.strictEqual(tmdbMovie.length, 2, 'numeric TMDB IDs must resolve with the injected key');

@@ -1,7 +1,7 @@
 {
   "id": "cee",
   "name": "CEE (🇮🇶)",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Independent CEE Buzz movie and TV sources for Nuvio",
   "author": "HashimFaisal",
   "scrapers": [
@@ -9,7 +9,7 @@
       "id": "cee",
       "name": "CEE (🇮🇶)",
       "description": "CEE Buzz Iraq — movies and TV series sources",
-      "version": "2.0.2",
+      "version": "2.0.3",
       "filename": "index.js",
       "supportedTypes": [
         "movie",
