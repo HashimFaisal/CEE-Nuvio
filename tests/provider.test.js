@@ -12,12 +12,23 @@ const response = (data, ok, status) => ({
 async function main() {
   const originalFetch = global.fetch;
   global.SCRAPER_SETTINGS = {};
+  global.TMDB_API_KEY = 'test-key';
 
   global.fetch = async function (url) {
     const value = String(url);
 
     if (value.includes('/meta/movie/tt0133093')) {
       return response({ meta: { name: 'The Matrix', year: '1999' } });
+    }
+    if (value.includes('api.themoviedb.org/3/movie/603')) {
+      return response({
+        id: 603,
+        title: 'The Matrix',
+        original_title: 'The Matrix',
+        release_date: '1999-03-31',
+        imdb_id: 'tt0133093',
+        translations: { translations: [] }
+      });
     }
     if (value.includes('/meta/series/tt1111111')) {
       return response({ meta: { name: 'Test Show', year: '2020' } });
@@ -79,6 +90,9 @@ async function main() {
     assert.strictEqual(movie.length, 2, 'duplicate stream URLs must be removed');
     assert.strictEqual(movie[0].subtitles.length, 1, 'subtitle metadata must be retained');
 
+    const tmdbMovie = await getStreams({ tmdbId: 603, mediaType: 'movie' });
+    assert.strictEqual(tmdbMovie.length, 2, 'numeric TMDB IDs must resolve with the injected key');
+
     const episode = await getStreams({
       tmdbId: 'tt1111111',
       mediaType: 'tv',
@@ -99,6 +113,7 @@ async function main() {
   } finally {
     global.fetch = originalFetch;
     delete global.SCRAPER_SETTINGS;
+    delete global.TMDB_API_KEY;
   }
 }
 
