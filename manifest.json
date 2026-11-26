@@ -1,21 +1,23 @@
 {
-  "name": "CEE Nuvio",
-  "description": "CEE Buzz Iraq provider for Nuvio — movies, TV series, multi-quality streams and Arabic subtitles.",
-  "version": "1.2.0",
+  "id": "cee",
+  "name": "CEE (🇮🇶)",
+  "version": "2.0.0",
+  "description": "Independent CEE Buzz movie and TV provider for Nuvio, with multi-quality streams and Arabic subtitle metadata.",
   "author": "HashimFaisal",
   "scrapers": [
     {
       "id": "cee",
       "name": "CEE (🇮🇶)",
-      "description": "CEE Buzz Iraq — Latest Movies, Series, Trending & Top Rated with multi-quality MP4 streams and Arabic subtitles",
-      "version": "1.2.0",
-      "author": "SafaaSalam",
+      "description": "CEE Buzz Iraq — movies, TV episodes, multi-quality streams and subtitle metadata.",
+      "version": "2.0.0",
+      "author": "HashimFaisal",
+      "filename": "index.js",
       "supportedTypes": [
         "movie",
         "tv"
       ],
-      "filename": "providers/cee.js",
       "enabled": true,
+      "hasSettings": true,
       "logo": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSNEnHalnMz2EfG48BZUI6iC86seq09uafFngG8gz1OWQ&s=10",
       "contentLanguage": [
         "ar"
