@@ -21,6 +21,7 @@ The provider follows the request and resolution flow used by the standalone Cine
 - MAL metadata lookup through AniList.
 - Strict season-and-episode matching. If there is not exactly one match, no stream is returned.
 - CEE's established `transcoddedFiles` player route is tried first, with `transcodedFiles` as a fallback.
+- The manifest follows Cinemana's field structure and declares Android support.
 - Stream URL normalization, duplicate removal, and quality sorting. Returned stream objects use the same three fields as Cinemana: `name`, `title`, and `url`.
 - Network diagnosis only after a network-level failure.
 
