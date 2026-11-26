@@ -1,0 +1,596 @@
+'use strict';
+
+/*
+ * CEE Nuvio provider — independent implementation.
+ * Uses CEE's public web API; no CinemaBox or Cinemana dependency.
+ */
+
+const DEFAULT_BASE = 'https://cee.buzz';
+const API_SUFFIX = '/api/android';
+const USER_AGENT = 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
+const cache = new Map();
+
+function settings() {
+  const root = typeof globalThis !== 'undefined' ? globalThis : {};
+  return root.SCRAPER_SETTINGS || {};
+}
+
+function baseUrl() {
+  const configured = String(settings().domain || DEFAULT_BASE).trim();
+  return configured.replace(/\/+$/, '');
+}
+
+function tmdbKey() {
+  const root = typeof globalThis !== 'undefined' ? globalThis : {};
+  return String(root.TMDB_API_KEY || '').trim();
+}
+
+function cached(key, loader, ttl) {
+  const now = Date.now();
+  const previous = cache.get(key);
+  if (previous && now - previous.time < ttl) return previous.value;
+
+  const pending = Promise.resolve().then(loader).catch(function (error) {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, { time: now, value: pending });
+  return pending;
+}
+
+function request(url, options) {
+  const opts = options || {};
+  const headers = Object.assign({
+    Accept: 'application/json, text/plain, */*',
+    'User-Agent': USER_AGENT,
+    Referer: baseUrl() + '/',
+    Origin: baseUrl()
+  }, opts.headers || {});
+
+  return fetch(url, {
+    method: opts.method || 'GET',
+    headers: headers,
+    body: opts.body
+  }).then(function (response) {
+    return response.text().then(function (body) {
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status + ' ' + url + ' :: ' + body.slice(0, 500));
+      }
+      try {
+        return JSON.parse(body);
+      } catch (error) {
+        throw new Error('Invalid JSON from ' + url + ' :: ' + body.slice(0, 250));
+      }
+    });
+  });
+}
+
+function api(path) {
+  return request(baseUrl() + API_SUFFIX + '/' + String(path).replace(/^\/+/, ''));
+}
+
+function probe(url) {
+  return fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json, text/plain, */*', 'User-Agent': USER_AGENT }
+  }).then(function (response) {
+    return !!response && response.ok;
+  }).catch(function () {
+    return false;
+  });
+}
+
+function diagnoseNetwork() {
+  return cached('network-diagnostic', function () {
+    return probe(baseUrl()).then(function (hostOk) {
+      if (hostOk) {
+        console.log('[CEE NETWORK] CEE_HOST_REACHABLE');
+        return 'CEE_HOST_REACHABLE';
+      }
+      return probe('https://api.github.com/zen').then(function (internetOk) {
+        const state = internetOk ? 'CEE_HOST_UNREACHABLE_INTERNET_OK' : 'NETWORK_CONNECTIVITY_UNCLEAR';
+        console.log('[CEE NETWORK] ' + state);
+        return state;
+      });
+    });
+  }, 30000);
+}
+
+function listFrom(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  const keys = ['data', 'results', 'videos', 'items', 'list'];
+  for (let i = 0; i < keys.length; i++) {
+    if (Array.isArray(value[keys[i]])) return value[keys[i]];
+  }
+  if (value.data && typeof value.data === 'object') {
+    for (let j = 0; j < keys.length; j++) {
+      if (Array.isArray(value.data[keys[j]])) return value.data[keys[j]];
+    }
+  }
+  return [];
+}
+
+function objectFrom(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) return value[0] || null;
+  if (value.data && !Array.isArray(value.data) && typeof value.data === 'object') return value.data;
+  return value;
+}
+
+function normalizeTitle(value) {
+  return String(value || '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .normalize ? String(value || '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f\u064b-\u065f\u0670]/g, '')
+      .toLowerCase()
+      .replace(/&/g, ' and ')
+      .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+    : String(value || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim();
+}
+
+function titleScore(left, right) {
+  const a = normalizeTitle(left);
+  const b = normalizeTitle(right);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const aa = a.split(' ');
+  const bb = b.split(' ');
+  let common = 0;
+  for (let i = 0; i < aa.length; i++) {
+    if (aa[i] && bb.indexOf(aa[i]) !== -1) common++;
+  }
+  return (2 * common) / (aa.length + bb.length);
+}
+
+function imdbFrom(value) {
+  const match = String(value || '').match(/tt\d{5,12}/i);
+  return match ? match[0].toLowerCase() : null;
+}
+
+function malFrom(value) {
+  const match = String(value || '').match(/myanimelist\.net\/anime\/(\d+)/i);
+  return match ? match[1] : null;
+}
+
+function yearFrom(value) {
+  const match = String(value || '').match(/\b(19|20)\d{2}\b/);
+  return match ? match[0] : null;
+}
+
+function mediaKind(type) {
+  return String(type || 'movie').toLowerCase() === 'movie' ? 'movie' : 'tv';
+}
+
+function parseDirectId(value) {
+  const match = String(value || '').trim().match(/^(?:cee_|cee:)(\d+)(?:[:_](\d+)[:_](\d+))?$/i);
+  if (!match) return null;
+  return {
+    directNb: match[1],
+    season: match[2] ? Number(match[2]) : null,
+    episode: match[3] ? Number(match[3]) : null
+  };
+}
+
+function parseInputId(value) {
+  const raw = String(value || '').trim();
+  const episodeMatch = raw.match(/^(tt\d+)(?::(\d+):(\d+))?$/i);
+  if (episodeMatch) {
+    return {
+      imdbId: episodeMatch[1].toLowerCase(),
+      season: episodeMatch[2] ? Number(episodeMatch[2]) : null,
+      episode: episodeMatch[3] ? Number(episodeMatch[3]) : null
+    };
+  }
+  const malMatch = raw.match(/^mal:(\d+)(?::(\d+))?$/i);
+  if (malMatch) {
+    return { malId: malMatch[1], absoluteEpisode: malMatch[2] ? Number(malMatch[2]) : null };
+  }
+  const direct = parseDirectId(raw);
+  if (direct) return direct;
+  return {
+    tmdbId: raw.replace(/^(tmdb:|movie:|series:|tv:)/i, '').split(':')[0],
+    season: null,
+    episode: null
+  };
+}
+
+function resolveMal(malId, absoluteEpisode) {
+  return cached('mal-meta-' + malId, function () {
+    return request('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Nuvio-CEE/2.0' },
+      body: JSON.stringify({
+        query: 'query($idMal: Int){Media(idMal:$idMal,type:ANIME){startDate{year} title{romaji english native}}}',
+        variables: { idMal: Number(malId) }
+      })
+    }).then(function (response) {
+      const media = response && response.data && response.data.Media;
+      if (!media) throw new Error('No AniList metadata for MAL ' + malId);
+      const titles = [];
+      if (media.title) {
+        [media.title.english, media.title.romaji, media.title.native].forEach(function (title) {
+          if (title && titles.indexOf(title) === -1) titles.push(title);
+        });
+      }
+      return {
+        malId: String(malId),
+        imdbId: null,
+        titles: titles,
+        year: media.startDate && media.startDate.year ? String(media.startDate.year) : null,
+        absoluteEpisode: absoluteEpisode
+      };
+    });
+  }, 600000);
+}
+
+function resolveMetadata(parsed, type) {
+  if (parsed.directNb) return Promise.resolve(parsed);
+  if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode);
+
+  const key = tmdbKey();
+  if (!key) {
+    console.error('[CEE] TMDB_API_KEY is not available in the Nuvio runtime');
+    return Promise.resolve({ titles: [], year: null, imdbId: parsed.imdbId || null });
+  }
+
+  const kind = mediaKind(type);
+  const id = parsed.imdbId || parsed.tmdbId;
+  if (!id) return Promise.resolve({ titles: [], year: null });
+
+  const lookup = parsed.imdbId
+    ? 'https://api.themoviedb.org/3/find/' + encodeURIComponent(parsed.imdbId) +
+      '?api_key=' + encodeURIComponent(key) + '&external_source=imdb_id'
+    : null;
+
+  const tmdbIdPromise = lookup
+    ? request(lookup).then(function (found) {
+        const choices = kind === 'movie'
+          ? (found.movie_results || found.tv_results || [])
+          : (found.tv_results || found.movie_results || []);
+        return choices.length ? String(choices[0].id) : null;
+      })
+    : Promise.resolve(String(parsed.tmdbId));
+
+  return cached('meta-' + kind + '-' + id, function () {
+    return tmdbIdPromise.then(function (tmdbId) {
+      if (!tmdbId) return { titles: [], year: null, imdbId: parsed.imdbId || null };
+      const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
+        '?api_key=' + encodeURIComponent(key) + '&append_to_response=external_ids,translations';
+      return request(url).then(function (details) {
+        const external = details.external_ids || {};
+        const resolvedImdb = parsed.imdbId || imdbFrom(details.imdb_id) || imdbFrom(external.imdb_id);
+        const titles = [];
+        [details.title || details.name, details.original_title || details.original_name].forEach(function (title) {
+          if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
+        });
+        const translations = details.translations && details.translations.translations || [];
+        for (let i = 0; i < translations.length; i++) {
+          const item = translations[i];
+          const title = item && item.iso_639_1 === 'ar' && item.data && (item.data.title || item.data.name);
+          if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
+        }
+        return {
+          tmdbId: tmdbId,
+          imdbId: resolvedImdb,
+          titles: titles,
+          year: yearFrom(details.release_date || details.first_air_date),
+          season: parsed.season,
+          episode: parsed.episode
+        };
+      });
+    });
+  }, 600000);
+}
+
+function getCandidateTitles(item) {
+  return [
+    item && item.en_title, item && item.ar_title, item && item.other_title,
+    item && item.enTitle, item && item.arTitle, item && item.title, item && item.name
+  ].filter(Boolean).map(String);
+}
+
+function searchCee(meta, type) {
+  const titles = (meta.titles || []).filter(Boolean);
+  if (!titles.length && meta.imdbId) titles.push(meta.imdbId);
+  if (!titles.length && meta.malId) titles.push('mal:' + meta.malId);
+  if (!titles.length) return Promise.resolve(null);
+
+  const kind = mediaKind(type);
+  const apiType = kind === 'movie' ? 'movies' : 'series';
+  const expectedKind = kind === 'movie' ? 1 : 2;
+  const queries = [];
+  titles.slice(0, 3).forEach(function (title) {
+    queries.push(title);
+    if (meta.year) queries.push(title + ' ' + meta.year);
+  });
+
+  const jobs = queries.map(function (term) {
+    const encoded = encodeURIComponent(term);
+    const year = meta.year ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1) : '1900,' + new Date().getFullYear();
+    const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
+      '&staffTitle=' + encoded + '&year=' + encodeURIComponent(year) +
+      '&page=0&type=' + apiType + '&itemsPerPage=12';
+    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
+      return api(path).then(listFrom);
+    }, 600000).catch(function (error) {
+      console.error('[CEE SEARCH]', term, error.message);
+      return [];
+    });
+  });
+
+  return Promise.all(jobs).then(function (groups) {
+    const unique = new Map();
+    groups.forEach(function (items) {
+      items.forEach(function (item) {
+        const id = item && (item.nb != null ? item.nb : item.id);
+        if (id != null && String(id) !== '') unique.set(String(id), item);
+      });
+    });
+
+    const ranked = [];
+    unique.forEach(function (item) {
+      const itemKind = Number(item.kind);
+      if (itemKind && itemKind !== expectedKind) return;
+
+      const candidateImdb = imdbFrom(item.imdbUrlRef || item.imdb_url_ref);
+      const candidateMal = malFrom(item.imdbUrlRef || item.imdb_url_ref);
+      if (meta.imdbId && candidateImdb && candidateImdb !== meta.imdbId) return;
+      if (meta.malId && candidateMal && candidateMal !== String(meta.malId)) return;
+
+      const candidateTitles = getCandidateTitles(item);
+      let score = 0;
+      let exact = false;
+      candidateTitles.forEach(function (candidate) {
+        const normalized = normalizeTitle(candidate);
+        (meta.titles || []).forEach(function (wanted) {
+          if (normalized && normalized === normalizeTitle(wanted)) exact = true;
+          score = Math.max(score, titleScore(candidate, wanted));
+        });
+      });
+
+      const candidateYear = yearFrom(item.year || item.releaseYear || item.releaseDate);
+      if (meta.year && candidateYear) {
+        const difference = Math.abs(Number(meta.year) - Number(candidateYear));
+        if (difference > 1) return;
+        if (difference === 0) score += 0.12;
+      }
+
+      const exactExternal = (!!meta.imdbId && candidateImdb === meta.imdbId) ||
+        (!!meta.malId && candidateMal === String(meta.malId));
+      if (!exactExternal && !exact && score < 0.72) return;
+
+      const finalScore = exactExternal ? 2 : (exact ? 1.5 : score);
+      ranked.push({ id: String(item.nb != null ? item.nb : item.id), score: finalScore, item: item });
+    });
+
+    ranked.sort(function (a, b) { return b.score - a.score; });
+    if (!ranked.length) {
+      console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
+      return null;
+    }
+    if (ranked.length > 1 && ranked[0].score === ranked[1].score && ranked[0].score < 1.5) {
+      console.log('[CEE SEARCH] ambiguous match; refusing unsafe selection');
+      return null;
+    }
+    console.log('[CEE MATCH]', ranked[0].id, 'score:', ranked[0].score);
+    return ranked[0].id;
+  });
+}
+
+function numberOf(value) {
+  const match = String(value == null ? '' : value).match(/\d+/);
+  return match ? Number(match[0]) : null;
+}
+
+function resolveEpisode(seriesId, season, episode) {
+  if (season == null || episode == null) return Promise.resolve(null);
+  return cached('episodes-' + seriesId, function () {
+    return api('videoSeason/id/' + encodeURIComponent(seriesId)).then(listFrom);
+  }, 600000).then(function (episodes) {
+    const matches = episodes.filter(function (item) {
+      const itemSeason = numberOf(item && (item.season != null ? item.season : item.seasonNumber));
+      const itemEpisode = numberOf(item && (item.episodeNummer != null
+        ? item.episodeNummer
+        : (item.episodeNumber != null ? item.episodeNumber : item.episode)));
+      return itemSeason === Number(season) && itemEpisode === Number(episode) &&
+        item.nb != null && String(item.nb) !== '';
+    });
+    if (matches.length !== 1) {
+      console.log('[CEE EPISODE] exact match required; found:', matches.length,
+        'season:', season, 'episode:', episode);
+      return null;
+    }
+    return String(matches[0].nb);
+  });
+}
+
+function getDetails(videoId) {
+  return cached('details-' + videoId, function () {
+    return api('allVideoInfo/id/' + encodeURIComponent(videoId)).then(objectFrom);
+  }, 600000);
+}
+
+function getVideoFiles(videoId) {
+  return cached('player-' + videoId, function () {
+    return api('transcoddedFiles/id/' + encodeURIComponent(videoId)).then(listFrom).then(function (files) {
+      if (files.length) return files;
+      console.log('[CEE PLAYER] primary endpoint empty; trying alternate spelling');
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId)).then(listFrom);
+    }).catch(function (firstError) {
+      console.log('[CEE PLAYER] primary endpoint failed; trying alternate spelling:', firstError.message);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId)).then(listFrom);
+    });
+  }, 30000);
+}
+
+function normalizeUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.indexOf('//') === 0) return 'https:' + raw;
+  if (raw.charAt(0) === '/') return baseUrl() + raw;
+  return baseUrl() + '/' + raw.replace(/^\.?\//, '');
+}
+
+function qualityLabel(value) {
+  const raw = String(value || '').toLowerCase();
+  if (/2160|4k/.test(raw)) return '4K';
+  if (/1440|2k/.test(raw)) return '1440p';
+  if (/1080/.test(raw)) return '1080p';
+  if (/720/.test(raw)) return '720p';
+  if (/576/.test(raw)) return '576p';
+  if (/480/.test(raw)) return '480p';
+  if (/360/.test(raw)) return '360p';
+  if (/240/.test(raw)) return '240p';
+  return String(value || 'HD').trim();
+}
+
+function qualityRank(value) {
+  const label = qualityLabel(value);
+  const ranks = { '4K': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '576p': 576, '480p': 480, '360p': 360, '240p': 240 };
+  return ranks[label] || 0;
+}
+
+function subtitlesFor(videoId, details) {
+  const info = details && Array.isArray(details.translations) ? details : null;
+  if (!info) return [];
+  const priority = { ass: 0, vtt: 1, srt: 2 };
+  const entries = info.translations.slice().sort(function (a, b) {
+    const x = String(a && a.extention || '').toLowerCase();
+    const y = String(b && b.extention || '').toLowerCase();
+    return (priority[x] == null ? 3 : priority[x]) - (priority[y] == null ? 3 : priority[y]);
+  });
+  const seen = new Set();
+  const output = [];
+  entries.forEach(function (item, index) {
+    const url = normalizeUrl(item && item.file);
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    const ext = String(item.extention || '').toLowerCase();
+    const languageRaw = String(item.name || item.type || 'arabic').toLowerCase();
+    const arabic = ext === 'ass' || languageRaw.indexOf('ar') !== -1 || item.type === 'ar';
+    output.push({
+      id: 'cee-sub-' + videoId + '-' + (item.id || index),
+      url: url,
+      lang: arabic ? 'ar' : String(item.type || languageRaw),
+      language: arabic ? 'Arabic (' + ext.toUpperCase() + ') | العربية' : (item.name || 'Subtitle') + ' (' + ext.toUpperCase() + ')',
+      name: 'CEE (🇮🇶)'
+    });
+  });
+  return output;
+}
+
+function buildStreams(files, details, type, season, episode) {
+  const prefs = settings();
+  const preferred = String(prefs.preferredQuality || 'all').toLowerCase();
+  const subtitles = subtitlesFor('', details);
+  const arTitle = String(details && details.ar_title || '').trim();
+  const enTitle = String(details && details.en_title || '').trim();
+  const display = arTitle && enTitle && arTitle !== enTitle ? arTitle + ' | ' + enTitle : (arTitle || enTitle || 'CEE');
+  const suffix = type === 'tv' && episode != null
+    ? ' - S' + String(season || 1).padStart(2, '0') + 'E' + String(episode).padStart(2, '0')
+    : '';
+  const seen = new Set();
+  const streams = [];
+
+  files.forEach(function (file) {
+    const url = normalizeUrl(file && (file.videoUrl || file.url));
+    if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    const quality = qualityLabel(file.resolution || file.name || file.container);
+    if (preferred !== 'all' && preferred !== quality.toLowerCase()) return;
+    const container = String(file.container || 'mp4').toLowerCase();
+    streams.push({
+      name: 'CEE (🇮🇶) - ' + quality,
+      title: display + suffix + ' • ' + quality + ' (' + container.toUpperCase() + ')' +
+        (subtitles.length ? ' [مترجم | CC]' : ''),
+      url: url,
+      quality: quality,
+      language: 'ar',
+      provider: 'cee',
+      type: container,
+      headers: { 'User-Agent': USER_AGENT, Referer: baseUrl() + '/' },
+      subtitles: subtitles
+    });
+  });
+
+  streams.sort(function (a, b) { return qualityRank(b.quality) - qualityRank(a.quality); });
+  return streams;
+}
+
+function fetchStreams(type, id, season, episode) {
+  const kind = mediaKind(type);
+  const parsed = parseInputId(id);
+  const targetSeason = parsed.season != null ? parsed.season : season;
+  const targetEpisode = parsed.episode != null ? parsed.episode : (parsed.absoluteEpisode != null ? parsed.absoluteEpisode : episode);
+
+  return resolveMetadata(parsed, kind).then(function (meta) {
+    if (meta.directNb) return { meta: meta, baseId: meta.directNb };
+    return searchCee(meta, kind).then(function (baseId) {
+      return { meta: meta, baseId: baseId };
+    });
+  }).then(function (resolved) {
+    if (!resolved.baseId) return [];
+    const videoIdPromise = kind === 'tv'
+      ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode)
+      : Promise.resolve(resolved.baseId);
+    return videoIdPromise.then(function (videoId) {
+      if (!videoId) return [];
+      return Promise.all([
+        getVideoFiles(videoId),
+        getDetails(videoId).catch(function (error) {
+          console.error('[CEE DETAILS]', error.message);
+          return null;
+        })
+      ]).then(function (results) {
+        const files = results[0] || [];
+        if (!files.length) return [];
+        return buildStreams(files, results[1], kind, targetSeason, targetEpisode);
+      });
+    });
+  }).catch(function (error) {
+    const message = String(error && error.message || error);
+    console.error('[CEE STREAM ERROR]', kind, id, message);
+    if (/fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed/i.test(message)) {
+      return diagnoseNetwork().then(function () { return []; });
+    }
+    return [];
+  });
+}
+
+function getStreams(input, mediaType, season, episode) {
+  const args = input && typeof input === 'object'
+    ? input
+    : { tmdbId: input, mediaType: mediaType, season: season, episode: episode };
+  const id = args.tmdbId != null ? args.tmdbId : (args.id != null ? args.id : args.imdbId);
+  return fetchStreams(args.mediaType || args.type || 'movie', id, args.season, args.episode);
+}
+
+function onSettings() {
+  return [
+    { type: 'header', label: 'CEE (🇮🇶) Settings' },
+    { type: 'text', key: 'domain', label: 'Base URL', placeholder: DEFAULT_BASE, defaultValue: DEFAULT_BASE },
+    {
+      type: 'select', key: 'preferredQuality', label: 'Preferred Quality', defaultValue: 'all',
+      options: [
+        { label: 'All Qualities', value: 'all' },
+        { label: '4K (2160p)', value: '4K' },
+        { label: '1080p Full HD', value: '1080p' },
+        { label: '720p HD', value: '720p' },
+        { label: '480p SD', value: '480p' },
+        { label: '360p', value: '360p' }
+      ]
+    }
+  ];
+}
+
+module.exports = { getStreams: getStreams, onSettings: onSettings };
