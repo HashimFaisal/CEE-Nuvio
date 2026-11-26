@@ -10,14 +10,8 @@ const API_SUFFIX = '/api/android';
 const USER_AGENT = 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
 const cache = new Map();
 
-function settings() {
-  const root = typeof globalThis !== 'undefined' ? globalThis : {};
-  return root.SCRAPER_SETTINGS || {};
-}
-
 function baseUrl() {
-  const configured = String(settings().domain || DEFAULT_BASE).trim();
-  return configured.replace(/\/+$/, '');
+  return DEFAULT_BASE;
 }
 
 function tmdbKey() {
@@ -481,45 +475,7 @@ function qualityRank(value) {
   return ranks[label] || 0;
 }
 
-function subtitlesFor(videoId, details) {
-  const info = details && Array.isArray(details.translations) ? details : null;
-  if (!info) return [];
-  const priority = { ass: 0, vtt: 1, srt: 2 };
-  const entries = info.translations.slice().sort(function (a, b) {
-    const x = String(a && a.extention || '').toLowerCase();
-    const y = String(b && b.extention || '').toLowerCase();
-    return (priority[x] == null ? 3 : priority[x]) - (priority[y] == null ? 3 : priority[y]);
-  });
-  const seen = new Set();
-  const output = [];
-  entries.forEach(function (item, index) {
-    const url = normalizeUrl(item && item.file);
-    if (!url || seen.has(url)) return;
-    seen.add(url);
-    const ext = String(item.extention || '').toLowerCase();
-    const languageRaw = String(item.name || item.type || 'arabic').toLowerCase();
-    const arabic = ext === 'ass' || languageRaw.indexOf('ar') !== -1 || item.type === 'ar';
-    output.push({
-      id: 'cee-sub-' + videoId + '-' + (item.id || index),
-      url: url,
-      lang: arabic ? 'ar' : String(item.type || languageRaw),
-      language: arabic ? 'Arabic (' + ext.toUpperCase() + ') | العربية' : (item.name || 'Subtitle') + ' (' + ext.toUpperCase() + ')',
-      name: 'CEE (🇮🇶)'
-    });
-  });
-  return output;
-}
-
 function buildStreams(files, details, videoId, type, season, episode) {
-  const prefs = settings();
-  const preferred = String(prefs.preferredQuality || 'all').toLowerCase();
-  const subtitles = subtitlesFor(videoId, details);
-  const arTitle = String(details && details.ar_title || '').trim();
-  const enTitle = String(details && details.en_title || '').trim();
-  const display = arTitle && enTitle && arTitle !== enTitle ? arTitle + ' | ' + enTitle : (arTitle || enTitle || 'CEE');
-  const suffix = type === 'tv' && episode != null
-    ? ' - S' + String(season || 1).padStart(2, '0') + 'E' + String(episode).padStart(2, '0')
-    : '';
   const seen = new Set();
   const streams = [];
 
@@ -527,24 +483,18 @@ function buildStreams(files, details, videoId, type, season, episode) {
     const url = normalizeUrl(file && (file.videoUrl || file.url));
     if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) return;
     seen.add(url);
+
     const quality = qualityLabel(file.resolution || file.name || file.container);
-    if (preferred !== 'all' && preferred !== quality.toLowerCase()) return;
-    const container = String(file.container || 'mp4').toLowerCase();
     streams.push({
-      name: 'CEE (🇮🇶) - ' + quality,
-      title: display + suffix + ' • ' + quality + ' (' + container.toUpperCase() + ')' +
-        (subtitles.length ? ' [مترجم | CC]' : ''),
+      name: 'CEE · ' + quality,
+      title: quality + ' • CEE',
       url: url,
-      quality: quality,
-      language: 'ar',
-      provider: 'cee',
-      type: container,
-      headers: { 'User-Agent': USER_AGENT, Referer: baseUrl() + '/' },
-      subtitles: subtitles
+      _rank: qualityRank(quality)
     });
   });
 
-  streams.sort(function (a, b) { return qualityRank(b.quality) - qualityRank(a.quality); });
+  streams.sort(function (a, b) { return b._rank - a._rank; });
+  streams.forEach(function (stream) { delete stream._rank; });
   return streams;
 }
 
@@ -596,22 +546,4 @@ function getStreams(input, mediaType, season, episode) {
   return fetchStreams(args.mediaType || args.type || 'movie', id, args.season, args.episode);
 }
 
-function onSettings() {
-  return [
-    { type: 'header', label: 'CEE (🇮🇶) Settings' },
-    { type: 'text', key: 'domain', label: 'Base URL', placeholder: DEFAULT_BASE, defaultValue: DEFAULT_BASE },
-    {
-      type: 'select', key: 'preferredQuality', label: 'Preferred Quality', defaultValue: 'all',
-      options: [
-        { label: 'All Qualities', value: 'all' },
-        { label: '4K (2160p)', value: '4K' },
-        { label: '1080p Full HD', value: '1080p' },
-        { label: '720p HD', value: '720p' },
-        { label: '480p SD', value: '480p' },
-        { label: '360p', value: '360p' }
-      ]
-    }
-  ];
-}
-
-module.exports = { getStreams: getStreams, onSettings: onSettings };
+module.exports = { getStreams: getStreams };
