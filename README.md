@@ -36,4 +36,14 @@ The earlier extracted implementation remains in `providers/cee.js` as an attribu
 
 The provider uses the Nuvio JavaScript runtime's `fetch`, `Promise`, `Map`, and `Set` support. It intentionally does not depend on `AbortController` or native timers, because the extracted CEE runtime notes identify QuickJS targets without those APIs.
 
-Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Syntax validation alone does not establish live playback.
+## Offline regression tests
+
+Run with Node.js:
+
+\`\`\`bash
+node tests/provider.test.js
+\`\`\`
+
+The offline tests cover movie source resolution, quality ordering, duplicate URL removal, subtitle metadata, exact episode resolution, and rejection of ambiguous episode matches.
+
+Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Offline tests and syntax validation do not establish live playback.
