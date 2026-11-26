@@ -235,7 +235,8 @@ function resolveMetadata(parsed, type) {
   const kind = mediaKind(type);
   if (parsed.imdbId) {
     return cached('imdb-meta-' + kind + '-' + parsed.imdbId, function () {
-      return request('https://v3-cinemeta.strem.io/meta/' + kind + '/' +
+      const cinemetaType = kind === 'tv' ? 'series' : 'movie';
+      return request('https://v3-cinemeta.strem.io/meta/' + cinemetaType + '/' +
         encodeURIComponent(parsed.imdbId) + '.json').then(function (response) {
         const meta = response && response.meta;
         if (!meta) throw new Error('No Cinemeta metadata for ' + parsed.imdbId);
