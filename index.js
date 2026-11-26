@@ -509,6 +509,10 @@ function buildStreams(files, details, videoId, type, season, episode) {
     seen.add(url);
 
     const quality = qualityLabel(file.resolution || file.name || file.container);
+    // Experiment: exclude 4K/2160p sources to test whether high-bitrate
+    // variants are contributing to slow startup or playback buffering.
+    if (quality === '4K') return;
+
     const stream = {
       name: 'CEE · ' + quality,
       title: quality + ' • CEE',
