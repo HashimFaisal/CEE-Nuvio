@@ -10,14 +10,8 @@ const API_SUFFIX = '/api/android';
 const USER_AGENT = 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36';
 const cache = new Map();
 
-function settings() {
-  const root = typeof globalThis !== 'undefined' ? globalThis : {};
-  return root.SCRAPER_SETTINGS || {};
-}
-
 function baseUrl() {
-  const configured = String(settings().domain || DEFAULT_BASE).trim();
-  return configured.replace(/\/+$/, '');
+  return DEFAULT_BASE;
 }
 
 function tmdbKey() {
@@ -482,8 +476,6 @@ function qualityRank(value) {
 }
 
 function buildStreams(files, details, videoId, type, season, episode) {
-  const prefs = settings();
-  const preferred = String(prefs.preferredQuality || 'all').toLowerCase();
   const seen = new Set();
   const streams = [];
 
@@ -493,8 +485,6 @@ function buildStreams(files, details, videoId, type, season, episode) {
     seen.add(url);
 
     const quality = qualityLabel(file.resolution || file.name || file.container);
-    if (preferred !== 'all' && preferred !== quality.toLowerCase()) return;
-
     streams.push({
       name: 'CEE · ' + quality,
       title: quality + ' • CEE',
@@ -556,22 +546,4 @@ function getStreams(input, mediaType, season, episode) {
   return fetchStreams(args.mediaType || args.type || 'movie', id, args.season, args.episode);
 }
 
-function onSettings() {
-  return [
-    { type: 'header', label: 'CEE (🇮🇶) Settings' },
-    { type: 'text', key: 'domain', label: 'Base URL', placeholder: DEFAULT_BASE, defaultValue: DEFAULT_BASE },
-    {
-      type: 'select', key: 'preferredQuality', label: 'Preferred Quality', defaultValue: 'all',
-      options: [
-        { label: 'All Qualities', value: 'all' },
-        { label: '4K (2160p)', value: '4K' },
-        { label: '1080p Full HD', value: '1080p' },
-        { label: '720p HD', value: '720p' },
-        { label: '480p SD', value: '480p' },
-        { label: '360p', value: '360p' }
-      ]
-    }
-  ];
-}
-
-module.exports = { getStreams: getStreams, onSettings: onSettings };
+module.exports = { getStreams: getStreams };
