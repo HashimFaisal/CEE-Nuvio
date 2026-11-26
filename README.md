@@ -24,9 +24,9 @@ The provider follows the request and resolution flow used by the standalone Cine
 - Stream URL normalization, duplicate removal, quality sorting, and subtitle metadata.
 - Network diagnosis only after a network-level failure.
 
-## Attribution
+## Ownership and implementation
 
-The earlier extracted implementation remains in `providers/cee.js` as an attributed reference copy from [SafaaSalam/Arabic-Nuvio](https://github.com/SafaaSalam/Arabic-Nuvio). It is **not** the active implementation in this version. The active `index.js` is a separate implementation and does not copy the original provider source or Cinemana source code.
+The active provider implementation in `index.js` is written independently for this repository and maintained as **HashimFaisal**'s CEE Nuvio project. No copied provider source is included in the active project files.
 
 ## Install manifest
 
