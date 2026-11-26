@@ -119,22 +119,18 @@ function objectFrom(value) {
 }
 
 function normalizeTitle(value) {
-  return String(value || '')
+  let text = String(value || '')
     .replace(/[أإآ]/g, 'ا')
     .replace(/ة/g, 'ه')
-    .replace(/ى/g, 'ي')
-    .normalize ? String(value || '')
-      .replace(/[أإآ]/g, 'ا')
-      .replace(/ة/g, 'ه')
-      .replace(/ى/g, 'ي')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f\u064b-\u065f\u0670]/g, '')
-      .toLowerCase()
-      .replace(/&/g, ' and ')
-      .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
-      .trim()
-      .replace(/\s+/g, ' ')
-    : String(value || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim();
+    .replace(/ى/g, 'ي');
+  if (typeof text.normalize === 'function') {
+    text = text.normalize('NFD').replace(/[\u0300-\u036f\u064b-\u065f\u0670]/g, '');
+  }
+  return text.toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
 }
 
 function titleScore(left, right) {
@@ -236,61 +232,63 @@ function resolveMetadata(parsed, type) {
   if (parsed.directNb) return Promise.resolve(parsed);
   if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode);
 
-  const key = tmdbKey();
-  if (!key) {
-    console.error('[CEE] TMDB_API_KEY is not available in the Nuvio runtime');
-    return Promise.resolve({ titles: [], year: null, imdbId: parsed.imdbId || null });
-  }
-
   const kind = mediaKind(type);
-  const id = parsed.imdbId || parsed.tmdbId;
-  if (!id) return Promise.resolve({ titles: [], year: null });
-
-  const lookup = parsed.imdbId
-    ? 'https://api.themoviedb.org/3/find/' + encodeURIComponent(parsed.imdbId) +
-      '?api_key=' + encodeURIComponent(key) + '&external_source=imdb_id'
-    : null;
-
-  const tmdbIdPromise = lookup
-    ? request(lookup).then(function (found) {
-        const choices = kind === 'movie'
-          ? (found.movie_results || found.tv_results || [])
-          : (found.tv_results || found.movie_results || []);
-        return choices.length ? String(choices[0].id) : null;
-      })
-    : Promise.resolve(String(parsed.tmdbId));
-
-  return cached('meta-' + kind + '-' + id, function () {
-    return tmdbIdPromise.then(function (tmdbId) {
-      if (!tmdbId) return { titles: [], year: null, imdbId: parsed.imdbId || null };
-      const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
-        '?api_key=' + encodeURIComponent(key) + '&append_to_response=external_ids,translations';
-      return request(url).then(function (details) {
-        const external = details.external_ids || {};
-        const resolvedImdb = parsed.imdbId || imdbFrom(details.imdb_id) || imdbFrom(external.imdb_id);
+  if (parsed.imdbId) {
+    return cached('imdb-meta-' + kind + '-' + parsed.imdbId, function () {
+      return request('https://v3-cinemeta.strem.io/meta/' + kind + '/' +
+        encodeURIComponent(parsed.imdbId) + '.json').then(function (response) {
+        const meta = response && response.meta;
+        if (!meta) throw new Error('No Cinemeta metadata for ' + parsed.imdbId);
         const titles = [];
-        [details.title || details.name, details.original_title || details.original_name].forEach(function (title) {
+        [meta.name, meta.original_name, meta.english_name].forEach(function (title) {
           if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
         });
-        const translations = details.translations && details.translations.translations || [];
-        for (let i = 0; i < translations.length; i++) {
-          const item = translations[i];
-          const title = item && item.iso_639_1 === 'ar' && item.data && (item.data.title || item.data.name);
-          if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
-        }
         return {
-          tmdbId: tmdbId,
-          imdbId: resolvedImdb,
+          imdbId: parsed.imdbId,
           titles: titles,
-          year: yearFrom(details.release_date || details.first_air_date),
+          year: yearFrom(meta.year || meta.released),
           season: parsed.season,
           episode: parsed.episode
         };
       });
+    }, 600000);
+  }
+
+  const key = tmdbKey();
+  if (!key) {
+    console.error('[CEE] TMDB_API_KEY is not available in the Nuvio runtime');
+    return Promise.resolve({ titles: [], year: null });
+  }
+  const tmdbId = String(parsed.tmdbId || '');
+  if (!/^\\d+$/.test(tmdbId)) return Promise.resolve({ titles: [], year: null });
+
+  return cached('meta-' + kind + '-' + tmdbId, function () {
+    const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
+      '?api_key=' + encodeURIComponent(key) + '&append_to_response=external_ids,translations';
+    return request(url).then(function (details) {
+      const external = details.external_ids || {};
+      const resolvedImdb = imdbFrom(details.imdb_id) || imdbFrom(external.imdb_id);
+      const titles = [];
+      [details.title || details.name, details.original_title || details.original_name].forEach(function (title) {
+        if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
+      });
+      const translations = details.translations && details.translations.translations || [];
+      for (let i = 0; i < translations.length; i++) {
+        const item = translations[i];
+        const title = item && item.iso_639_1 === 'ar' && item.data && (item.data.title || item.data.name);
+        if (title && titles.indexOf(String(title).trim()) === -1) titles.push(String(title).trim());
+      }
+      return {
+        tmdbId: tmdbId,
+        imdbId: resolvedImdb,
+        titles: titles,
+        year: yearFrom(details.release_date || details.first_air_date),
+        season: parsed.season,
+        episode: parsed.episode
+      };
     });
   }, 600000);
 }
-
 function getCandidateTitles(item) {
   return [
     item && item.en_title, item && item.ar_title, item && item.other_title,
