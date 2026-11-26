@@ -88,7 +88,8 @@ async function main() {
     const movie = await getStreams({ tmdbId: 'tt0133093', mediaType: 'movie' });
     assert.deepStrictEqual(movie.map((item) => item.quality), ['1080p', '720p']);
     assert.strictEqual(movie.length, 2, 'duplicate stream URLs must be removed');
-    assert.strictEqual(movie[0].subtitles.length, 1, 'subtitle metadata must be retained');
+    assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
+      'CEE stream objects must match the Cinemana name/title/url schema');
 
     const tmdbMovie = await getStreams({ tmdbId: 603, mediaType: 'movie' });
     assert.strictEqual(tmdbMovie.length, 2, 'numeric TMDB IDs must resolve with the injected key');
