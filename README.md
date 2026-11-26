@@ -21,7 +21,7 @@ The provider follows the request and resolution flow used by the standalone Cine
 - MAL metadata lookup through AniList.
 - Strict season-and-episode matching. If there is not exactly one match, no stream is returned.
 - CEE's established `transcoddedFiles` player route is tried first, with `transcodedFiles` as a fallback.
-- Stream URL normalization, duplicate removal, quality sorting, and subtitle metadata.
+- Stream URL normalization, duplicate removal, and quality sorting. Returned stream objects use the same three fields as Cinemana: `name`, `title`, and `url`.
 - Network diagnosis only after a network-level failure.
 
 ## Ownership and implementation
@@ -30,7 +30,7 @@ The active provider implementation in `index.js` is written independently for th
 
 ## Install manifest
 
-`https://raw.githubusercontent.com/HashimFaisal/CEE-Nuvio/rebuild/cinemana-architecture/manifest.json`
+`https://raw.githubusercontent.com/HashimFaisal/CEE-Nuvio/main/manifest.json`
 
 ## Compatibility notes
 
@@ -44,6 +44,6 @@ Run with Node.js:
 node tests/provider.test.js
 ```
 
-The offline tests cover movie source resolution, quality ordering, duplicate URL removal, subtitle metadata, exact episode resolution, and rejection of ambiguous episode matches.
+The offline tests cover movie source resolution, quality ordering, duplicate URL removal, the Cinemana-compatible stream object shape, exact episode resolution, and rejection of ambiguous episode matches.
 
 Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Offline tests and syntax validation do not establish live playback.
