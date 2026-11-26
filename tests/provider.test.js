@@ -90,6 +90,33 @@ async function main() {
     assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
       'CEE stream objects must match the Cinemana name/title/url schema');
 
+    const originalFetchForHeaders = global.fetch;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt3333333')) {
+        return response({ meta: { name: 'Header Test', year: '2022' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        return response([{ nb: 40, kind: 1, en_title: 'Header Test', year: '2022', imdbUrlRef: 'tt3333333' }]);
+      }
+      if (value.includes('/transcoddedFiles/id/40')) {
+        return response([{
+          videoUrl: 'https://cdn.example/header-test.mp4',
+          resolution: '1080p',
+          requestHeaders: { Referer: 'https://cee.buzz/', Authorization: 'Bearer test' },
+          responseHeaders: { 'Content-Type': 'video/mp4' }
+        }]);
+      }
+      if (value.includes('/allVideoInfo/id/40')) return response({ en_title: 'Header Test' });
+      return response({ error: 'not found' }, false, 404);
+    };
+    const headerStreams = await getStreams({ tmdbId: 'tt3333333', mediaType: 'movie' });
+    assert.deepStrictEqual(headerStreams[0].behaviorHints.proxyHeaders, {
+      request: { Referer: 'https://cee.buzz/', Authorization: 'Bearer test' },
+      response: { 'Content-Type': 'video/mp4' }
+    }, 'explicit playback request/response headers must be forwarded to Nuvio');
+    global.fetch = originalFetchForHeaders;
+
     const tmdbMovie = await getStreams({ tmdbId: 603, mediaType: 'movie' });
     assert.strictEqual(tmdbMovie.length, 2, 'numeric TMDB IDs must resolve with the injected key');
 

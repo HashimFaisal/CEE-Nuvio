@@ -5,7 +5,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 ## Provider details
 
 - Provider ID: `cee`
-- Version: `2.0.1`
+- Version: `2.0.2`
 - Author: `HashimFaisal`
 - Supported media: movies and TV series
 - CEE API: `https://cee.buzz/api/android`
@@ -22,7 +22,8 @@ The provider follows the request and resolution flow used by the standalone Cine
 - Strict season-and-episode matching. If there is not exactly one match, no stream is returned.
 - CEE's established `transcoddedFiles` player route is tried first, with `transcodedFiles` as a fallback.
 - The manifest follows Cinemana's field structure and declares Android support.
-- Stream URL normalization, duplicate removal, and quality sorting. Returned stream objects use the same three fields as Cinemana: `name`, `title`, and `url`.
+- Stream URL normalization, duplicate removal, and quality sorting. Returned stream objects keep the same base fields as Cinemana: `name`, `title`, and `url`.
+- Explicit `requestHeaders` and `responseHeaders` supplied by CEE's player response are forwarded through Nuvio's `behaviorHints.proxyHeaders`; no headers are fabricated when CEE does not return them.
 - Network diagnosis only after a network-level failure.
 
 ## Ownership and implementation
@@ -47,4 +48,4 @@ node tests/provider.test.js
 
 The offline tests cover movie source resolution, quality ordering, duplicate URL removal, the Cinemana-compatible stream object shape, exact episode resolution, and rejection of ambiguous episode matches.
 
-Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Offline tests and syntax validation do not establish live playback.
+Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Header forwarding is conditional on CEE returning those explicit fields; it does not prove that CEE requires them or that it will increase throughput.

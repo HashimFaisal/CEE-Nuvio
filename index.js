@@ -456,6 +456,30 @@ function normalizeUrl(value) {
   return baseUrl() + '/' + raw.replace(/^\.?\//, '');
 }
 
+function safeHeaderMap(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const headers = {};
+  Object.keys(value).forEach(function (key) {
+    const name = String(key || '').trim();
+    const headerValue = value[key];
+    if (!name || typeof headerValue !== 'string') return;
+    const cleanValue = headerValue.trim();
+    if (!cleanValue || /[\r\n]/.test(name) || /[\r\n]/.test(cleanValue)) return;
+    headers[name] = cleanValue;
+  });
+  return Object.keys(headers).length ? headers : null;
+}
+
+function playbackProxyHeaders(file) {
+  const requestHeaders = safeHeaderMap(file && file.requestHeaders);
+  const responseHeaders = safeHeaderMap(file && file.responseHeaders);
+  if (!requestHeaders && !responseHeaders) return null;
+  const result = {};
+  if (requestHeaders) result.request = requestHeaders;
+  if (responseHeaders) result.response = responseHeaders;
+  return result;
+}
+
 function qualityLabel(value) {
   const raw = String(value || '').toLowerCase();
   if (/2160|4k/.test(raw)) return '4K';
@@ -485,12 +509,17 @@ function buildStreams(files, details, videoId, type, season, episode) {
     seen.add(url);
 
     const quality = qualityLabel(file.resolution || file.name || file.container);
-    streams.push({
+    const stream = {
       name: 'CEE · ' + quality,
       title: quality + ' • CEE',
       url: url,
       _rank: qualityRank(quality)
-    });
+    };
+    const proxyHeaders = playbackProxyHeaders(file);
+    if (proxyHeaders) {
+      stream.behaviorHints = { proxyHeaders: proxyHeaders };
+    }
+    streams.push(stream);
   });
 
   streams.sort(function (a, b) { return b._rank - a._rank; });
