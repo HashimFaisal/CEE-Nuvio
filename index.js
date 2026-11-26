@@ -481,70 +481,30 @@ function qualityRank(value) {
   return ranks[label] || 0;
 }
 
-function subtitlesFor(videoId, details) {
-  const info = details && Array.isArray(details.translations) ? details : null;
-  if (!info) return [];
-  const priority = { ass: 0, vtt: 1, srt: 2 };
-  const entries = info.translations.slice().sort(function (a, b) {
-    const x = String(a && a.extention || '').toLowerCase();
-    const y = String(b && b.extention || '').toLowerCase();
-    return (priority[x] == null ? 3 : priority[x]) - (priority[y] == null ? 3 : priority[y]);
-  });
-  const seen = new Set();
-  const output = [];
-  entries.forEach(function (item, index) {
-    const url = normalizeUrl(item && item.file);
-    if (!url || seen.has(url)) return;
-    seen.add(url);
-    const ext = String(item.extention || '').toLowerCase();
-    const languageRaw = String(item.name || item.type || 'arabic').toLowerCase();
-    const arabic = ext === 'ass' || languageRaw.indexOf('ar') !== -1 || item.type === 'ar';
-    output.push({
-      id: 'cee-sub-' + videoId + '-' + (item.id || index),
-      url: url,
-      lang: arabic ? 'ar' : String(item.type || languageRaw),
-      language: arabic ? 'Arabic (' + ext.toUpperCase() + ') | العربية' : (item.name || 'Subtitle') + ' (' + ext.toUpperCase() + ')',
-      name: 'CEE (🇮🇶)'
-    });
-  });
-  return output;
-}
-
 function buildStreams(files, details, videoId, type, season, episode) {
   const prefs = settings();
   const preferred = String(prefs.preferredQuality || 'all').toLowerCase();
-  const subtitles = subtitlesFor(videoId, details);
-  const arTitle = String(details && details.ar_title || '').trim();
-  const enTitle = String(details && details.en_title || '').trim();
-  const display = arTitle && enTitle && arTitle !== enTitle ? arTitle + ' | ' + enTitle : (arTitle || enTitle || 'CEE');
-  const suffix = type === 'tv' && episode != null
-    ? ' - S' + String(season || 1).padStart(2, '0') + 'E' + String(episode).padStart(2, '0')
-    : '';
   const seen = new Set();
   const streams = [];
 
   files.forEach(function (file) {
     const url = normalizeUrl(file && (file.videoUrl || file.url));
-    if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) return;
+    if (!url || !/^https?:\\/\\//i.test(url) || seen.has(url)) return;
     seen.add(url);
+
     const quality = qualityLabel(file.resolution || file.name || file.container);
     if (preferred !== 'all' && preferred !== quality.toLowerCase()) return;
-    const container = String(file.container || 'mp4').toLowerCase();
+
     streams.push({
-      name: 'CEE (🇮🇶) - ' + quality,
-      title: display + suffix + ' • ' + quality + ' (' + container.toUpperCase() + ')' +
-        (subtitles.length ? ' [مترجم | CC]' : ''),
+      name: 'CEE · ' + quality,
+      title: quality + ' • CEE',
       url: url,
-      quality: quality,
-      language: 'ar',
-      provider: 'cee',
-      type: container,
-      headers: { 'User-Agent': USER_AGENT, Referer: baseUrl() + '/' },
-      subtitles: subtitles
+      _rank: qualityRank(quality)
     });
   });
 
-  streams.sort(function (a, b) { return qualityRank(b.quality) - qualityRank(a.quality); });
+  streams.sort(function (a, b) { return b._rank - a._rank; });
+  streams.forEach(function (stream) { delete stream._rank; });
   return streams;
 }
 
