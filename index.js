@@ -360,7 +360,7 @@ function searchCee(meta, type) {
 
     ranked.sort(function (left, right) { return right.score - left.score; });
     if (!ranked.length) return null;
-    if (ranked.length > 1 && ranked[0].score === ranked[1].score && ranked[0].score < 2) return null;
+    if (ranked.length > 1 && ranked[0].score === ranked[1].score) return null;
     return ranked[0];
   }
 
@@ -509,10 +509,10 @@ function subtitlesFor(videoId, details) {
   return output;
 }
 
-function buildStreams(files, details, type, season, episode) {
+function buildStreams(files, details, videoId, type, season, episode) {
   const prefs = settings();
   const preferred = String(prefs.preferredQuality || 'all').toLowerCase();
-  const subtitles = subtitlesFor('', details);
+  const subtitles = subtitlesFor(videoId, details);
   const arTitle = String(details && details.ar_title || '').trim();
   const enTitle = String(details && details.en_title || '').trim();
   const display = arTitle && enTitle && arTitle !== enTitle ? arTitle + ' | ' + enTitle : (arTitle || enTitle || 'CEE');
@@ -574,7 +574,7 @@ function fetchStreams(type, id, season, episode) {
       ]).then(function (results) {
         const files = results[0] || [];
         if (!files.length) return [];
-        return buildStreams(files, results[1], kind, targetSeason, targetEpisode);
+        return buildStreams(files, results[1], videoId, kind, targetSeason, targetEpisode);
       });
     });
   }).catch(function (error) {
