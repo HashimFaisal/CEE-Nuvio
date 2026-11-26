@@ -307,34 +307,18 @@ function searchCee(meta, type) {
   const apiType = kind === 'movie' ? 'movies' : 'series';
   const expectedKind = kind === 'movie' ? 1 : 2;
   const queries = [];
-  titles.slice(0, 3).forEach(function (title) {
-    queries.push(title);
-    if (meta.year) queries.push(title + ' ' + meta.year);
-  });
+  const addQuery = function (value) {
+    if (value && queries.indexOf(value) === -1) queries.push(value);
+  };
 
-  const jobs = queries.map(function (term) {
-    const encoded = encodeURIComponent(term);
-    const year = meta.year ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1) : '1900,' + new Date().getFullYear();
-    const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
-      '&staffTitle=' + encoded + '&year=' + encodeURIComponent(year) +
-      '&page=0&type=' + apiType + '&itemsPerPage=12';
-    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
-      return api(path).then(listFrom);
-    }, 600000).catch(function (error) {
-      console.error('[CEE SEARCH]', term, error.message);
-      return [];
-    });
-  });
+  addQuery(titles[0]);
+  if (meta.year) addQuery(titles[0] + ' ' + meta.year);
+  for (let i = 1; i < Math.min(titles.length, 3); i++) addQuery(titles[i]);
+  if (queries.length > 4) queries.length = 4;
 
-  return Promise.all(jobs).then(function (groups) {
-    const unique = new Map();
-    groups.forEach(function (items) {
-      items.forEach(function (item) {
-        const id = item && (item.nb != null ? item.nb : item.id);
-        if (id != null && String(id) !== '') unique.set(String(id), item);
-      });
-    });
+  const unique = new Map();
 
+  function rankMatches() {
     const ranked = [];
     unique.forEach(function (item) {
       const itemKind = Number(item.kind);
@@ -367,24 +351,61 @@ function searchCee(meta, type) {
         (!!meta.malId && candidateMal === String(meta.malId));
       if (!exactExternal && !exact && score < 0.72) return;
 
-      const finalScore = exactExternal ? 2 : (exact ? 1.5 : score);
-      ranked.push({ id: String(item.nb != null ? item.nb : item.id), score: finalScore, item: item });
+      ranked.push({
+        id: String(item.nb != null ? item.nb : item.id),
+        score: exactExternal ? 2 : (exact ? 1.5 : score),
+        exactExternal: exactExternal
+      });
     });
 
-    ranked.sort(function (a, b) { return b.score - a.score; });
-    if (!ranked.length) {
-      console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
-      return null;
-    }
-    if (ranked.length > 1 && ranked[0].score === ranked[1].score && ranked[0].score < 1.5) {
-      console.log('[CEE SEARCH] ambiguous match; refusing unsafe selection');
-      return null;
-    }
-    console.log('[CEE MATCH]', ranked[0].id, 'score:', ranked[0].score);
-    return ranked[0].id;
-  });
-}
+    ranked.sort(function (left, right) { return right.score - left.score; });
+    if (!ranked.length) return null;
+    if (ranked.length > 1 && ranked[0].score === ranked[1].score && ranked[0].score < 2) return null;
+    return ranked[0];
+  }
 
+  function searchAt(index) {
+    if (index >= queries.length) {
+      const best = rankMatches();
+      if (!best) {
+        console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
+        return null;
+      }
+      console.log('[CEE MATCH]', best.id, 'score:', best.score);
+      return best.id;
+    }
+
+    const term = queries[index];
+    const encoded = encodeURIComponent(term);
+    const yearRange = meta.year
+      ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1)
+      : '1900,' + new Date().getFullYear();
+    const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
+      '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
+      '&page=0&type=' + apiType + '&itemsPerPage=12';
+
+    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
+      return api(path).then(listFrom);
+    }, 600000).catch(function (error) {
+      console.error('[CEE SEARCH]', term, error.message);
+      return [];
+    }).then(function (items) {
+      items.forEach(function (item) {
+        const id = item && (item.nb != null ? item.nb : item.id);
+        if (id != null && String(id) !== '') unique.set(String(id), item);
+      });
+
+      const currentBest = rankMatches();
+      if (currentBest && currentBest.exactExternal) {
+        console.log('[CEE MATCH]', currentBest.id, 'exact external ID');
+        return currentBest.id;
+      }
+      return searchAt(index + 1);
+    });
+  }
+
+  return Promise.resolve().then(function () { return searchAt(0); });
+}
 function numberOf(value) {
   const match = String(value == null ? '' : value).match(/\d+/);
   return match ? Number(match[0]) : null;
