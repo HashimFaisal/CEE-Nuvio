@@ -22,7 +22,8 @@ function baseUrl() {
 
 function tmdbKey() {
   const root = typeof globalThis !== 'undefined' ? globalThis : {};
-  return String(root.TMDB_API_KEY || '').trim();
+  const injected = typeof TMDB_API_KEY !== 'undefined' ? TMDB_API_KEY : root.TMDB_API_KEY;
+  return String(injected || '').trim();
 }
 
 function cached(key, loader, ttl) {
