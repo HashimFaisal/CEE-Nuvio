@@ -40,9 +40,9 @@ The provider uses the Nuvio JavaScript runtime's `fetch`, `Promise`, `Map`, and 
 
 Run with Node.js:
 
-\`\`\`bash
+```bash
 node tests/provider.test.js
-\`\`\`
+```
 
 The offline tests cover movie source resolution, quality ordering, duplicate URL removal, subtitle metadata, exact episode resolution, and rejection of ambiguous episode matches.
 
