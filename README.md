@@ -15,14 +15,16 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 
 The provider follows the request and resolution flow used by the standalone Cinemana plugin, while remaining connected only to CEE:
 
-- Promise-based in-memory caching for metadata, searches, episode lists, details, and player responses.
+- Bounded in-memory LRU caching with in-flight request coalescing for metadata, title searches, episode lists, and player responses.
+- CinemaBox-style ordered title search: primary title first, stop immediately on a confident first-page match, then try year-qualified and alternate-title fallbacks only when needed.
+- Abort-aware request flow and a bounded provider deadline so a slow alias lookup cannot hold the source test open indefinitely.
 - Arabic-aware title normalization and confidence-based matching.
 - IMDb metadata through Cinemeta; TMDB numeric IDs use the Nuvio runtime's `TMDB_API_KEY`.
 - MAL metadata lookup through AniList.
 - Strict season-and-episode matching. If there is not exactly one match, no stream is returned.
 - CEE's established `transcoddedFiles` player route is tried first, with `transcodedFiles` as a fallback.
 - The manifest follows Cinemana's field structure and declares Android support.
-- Stream URL normalization, duplicate removal, and quality sorting. Returned stream objects keep the same base fields as Cinemana: `name`, `title`, and `url`.
+- Stream URL validation, duplicate removal, CinemaBox-style quality metadata and quality sorting. Returned stream objects expose `name`, `title`, `url`, and `quality`, with `behaviorHints.proxyHeaders` only when supplied by CEE.
 - Explicit `requestHeaders` and `responseHeaders` supplied by CEE's player response are forwarded through Nuvio's `behaviorHints.proxyHeaders`; no headers are fabricated when CEE does not return them.
 - Network diagnosis only after a network-level failure.
 
@@ -46,6 +48,6 @@ Run with Node.js:
 node tests/provider.test.js
 ```
 
-The offline tests cover movie source resolution, quality ordering, duplicate URL removal, the Cinemana-compatible stream object shape, exact episode resolution, and rejection of ambiguous episode matches.
+The offline tests cover movie and episode resolution, quality ordering, duplicate URL removal, explicit playback-header forwarding, primary-query early stop, ordered fallback search, metadata fast paths, and rejection of ambiguous episode matches.
 
 Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Header forwarding is conditional on CEE returning those explicit fields; it does not prove that CEE requires them or that it will increase throughput.
