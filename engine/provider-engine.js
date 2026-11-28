@@ -8,7 +8,7 @@ function qualityRank(value) {
 }
 
 function validStreamUrl(value) {
-  if (typeof value !== 'string' || !value || value !== value.trim() || /[\\s\\\\]/.test(value)) return false;
+  if (typeof value !== 'string' || !value || value !== value.trim() || /[\s\\]/.test(value)) return false;
   try {
     const parsed = new URL(value);
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
