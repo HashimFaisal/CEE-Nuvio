@@ -3,7 +3,10 @@
 const QUALITY = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '576p': 576, '480p': 480, '360p': 360, '240p': 240 };
 
 function qualityRank(value) {
-  const match = String(value || '').match(/(2160|1440|1080|720|576|480|360|240)/);
+  const raw = String(value || '');
+  if (/4\s*k/i.test(raw)) return 2160;
+  const match = raw.match(/(2160|1440|1080|720|576|480|360|240)/);
+  return match ? Number(match[1]) : 0;
   return match ? Number(match[1]) : 0;
 }
 
