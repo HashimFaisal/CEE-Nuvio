@@ -227,8 +227,8 @@ function request(url, options) {
   });
 }
 
-function api(path) {
-  return request(baseUrl() + API_SUFFIX + '/' + String(path).replace(/^\/+/, ''));
+function api(path, options) {
+  return request(baseUrl() + API_SUFFIX + '/' + String(path).replace(/^\/+/, ''), options);
 }
 
 function probe(url) {
@@ -361,7 +361,7 @@ function parseInputId(value) {
   };
 }
 
-function resolveMal(malId, absoluteEpisode) {
+function resolveMal(malId, absoluteEpisode, signal) {
   return cached('mal-meta-' + malId, function () {
     return request('https://graphql.anilist.co', {
       method: 'POST',
@@ -370,7 +370,8 @@ function resolveMal(malId, absoluteEpisode) {
         query: 'query($idMal: Int){Media(idMal:$idMal,type:ANIME){startDate{year} title{romaji english native}}}',
         variables: { idMal: Number(malId) }
       })
-    }).then(function (response) {
+    },
+    signal ? { signal: signal } : undefined).then(function (response) {
       const media = response && response.data && response.data.Media;
       if (!media) throw new Error('No AniList metadata for MAL ' + malId);
       const titles = [];
@@ -413,7 +414,7 @@ function metadataFromInput(input, parsed) {
   };
 }
 
-function resolveMetadata(parsed, type, suppliedMeta) {
+function resolveMetadata(parsed, type, suppliedMeta, signal) {
   if (parsed.directNb) return Promise.resolve(parsed);
   if (suppliedMeta && suppliedMeta.titles && suppliedMeta.titles.length) {
     console.log('[CEE METADATA] using Nuvio-supplied metadata; skipping external metadata request');
@@ -425,14 +426,14 @@ function resolveMetadata(parsed, type, suppliedMeta) {
       episode: parsed.episode != null ? parsed.episode : suppliedMeta.episode
     }));
   }
-  if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode);
+  if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode, signal);
 
   const kind = mediaKind(type);
   if (parsed.imdbId) {
     return cached('imdb-meta-' + kind + '-' + parsed.imdbId, function () {
       const cinemetaType = kind === 'tv' ? 'series' : 'movie';
       return request('https://v3-cinemeta.strem.io/meta/' + cinemetaType + '/' +
-        encodeURIComponent(parsed.imdbId) + '.json').then(function (response) {
+        encodeURIComponent(parsed.imdbId) + '.json', { signal: signal }).then(function (response) {
         const meta = response && response.meta;
         if (!meta) throw new Error('No Cinemeta metadata for ' + parsed.imdbId);
         const titles = [];
@@ -461,7 +462,7 @@ function resolveMetadata(parsed, type, suppliedMeta) {
   return cached('meta-' + kind + '-' + tmdbId, function () {
     const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
       '?api_key=' + encodeURIComponent(key) + '&append_to_response=external_ids,translations';
-    return request(url).then(function (details) {
+    return request(url, { signal: signal }).then(function (details) {
       const external = details.external_ids || {};
       const resolvedImdb = imdbFrom(details.imdb_id) || imdbFrom(external.imdb_id);
       const titles = [];
@@ -492,7 +493,7 @@ function getCandidateTitles(item) {
   ].filter(Boolean).map(String);
 }
 
-function searchCee(meta, type) {
+function searchCee(meta, type, signal) {
   const titles = (meta.titles || []).filter(Boolean);
   if (!titles.length && meta.imdbId) titles.push(meta.imdbId);
   if (!titles.length && meta.malId) titles.push('mal:' + meta.malId);
@@ -507,10 +508,11 @@ function searchCee(meta, type) {
     if (term && queries.indexOf(term) === -1) queries.push(term);
   };
 
+  // CinemaBox-style search: primary title first, then only the fallbacks
+  // needed to establish a confident match. Do not wait for slow aliases.
   addQuery(titles[0]);
   if (meta.year) addQuery(titles[0] + ' ' + meta.year);
-  for (let i = 1; i < Math.min(titles.length, 3); i++) addQuery(titles[i]);
-  if (queries.length > 4) queries.length = 4;
+  for (let i = 1; i < Math.min(titles.length, 4); i++) addQuery(titles[i]);
 
   const yearRange = meta.year
     ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1)
@@ -522,16 +524,16 @@ function searchCee(meta, type) {
       '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
       '&page=0&type=' + apiType + '&itemsPerPage=12';
     return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
-      return api(path).then(listFrom);
+      return api(path, { signal: signal }).then(listFrom);
     }, 600000).catch(function (error) {
       console.error('[CEE SEARCH]', term, error.message);
       return [];
     });
   }
 
-  function rankMatches(items) {
+  function rankMatches(lists) {
     const unique = new Map();
-    items.forEach(function (list) {
+    lists.forEach(function (list) {
       (Array.isArray(list) ? list : []).forEach(function (item) {
         const id = item && (item.nb != null ? item.nb : item.id);
         if (id != null && String(id) !== '' && !unique.has(String(id))) {
@@ -562,10 +564,12 @@ function searchCee(meta, type) {
       });
 
       const candidateYear = yearFrom(item.year || item.releaseYear || item.releaseDate);
+      let yearMatches = false;
       if (meta.year && candidateYear) {
         const difference = Math.abs(Number(meta.year) - Number(candidateYear));
         if (difference > 1) return;
-        if (difference === 0) score += 0.12;
+        yearMatches = difference === 0;
+        if (yearMatches) score += 0.12;
       }
 
       const exactExternal = (!!meta.imdbId && candidateImdb === meta.imdbId) ||
@@ -575,26 +579,60 @@ function searchCee(meta, type) {
       ranked.push({
         id: String(item.nb != null ? item.nb : item.id),
         score: exactExternal ? 2 : (exact ? 1.5 : score),
-        exactExternal: exactExternal
+        exactExternal: exactExternal,
+        exactTitle: exact,
+        yearMatches: yearMatches
       });
     });
 
-    ranked.sort(function (left, right) { return right.score - left.score; });
+    ranked.sort(function (left, right) {
+      if (right.score !== left.score) return right.score - left.score;
+      return String(left.id).localeCompare(String(right.id));
+    });
     if (!ranked.length) return null;
     if (ranked.length > 1 && ranked[0].score === ranked[1].score) return null;
     return ranked[0];
   }
 
-  // Search title variants concurrently instead of waiting for each slow CEE
-  // response before issuing the next query. The cache still coalesces repeats.
-  return Promise.all(queries.map(searchOne)).then(function (results) {
-    const best = rankMatches(results);
-    if (!best) {
-      console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
-      return null;
+  function isStrong(match) {
+    return !!match && (match.exactExternal || (match.exactTitle && (!meta.year || match.yearMatches)));
+  }
+
+  let best = null;
+  let completed = Promise.resolve();
+  let queryIndex = 0;
+
+  function runNext() {
+    if (queryIndex >= queries.length) return Promise.resolve(best && best.id || null);
+    const term = queries[queryIndex++];
+    const queryStarted = Date.now();
+    return searchOne(term).then(function (items) {
+      const match = rankMatches([items]);
+      if (match && (!best || match.score > best.score)) best = match;
+      console.log('[CEE SEARCH TRACE] query', queryIndex, 'elapsedMs:', Date.now() - queryStarted,
+        'results:', items.length, 'best:', match ? match.id : 'none',
+        'score:', match ? match.score : 'n/a');
+      if (isStrong(match)) {
+        console.log('[CEE SEARCH STOP] strong first-page match', match.id,
+          match.exactExternal ? 'external-id' : 'exact-title');
+        return match.id;
+      }
+      return runNext();
+    });
+  }
+
+  console.log('[CEE SEARCH] ordered queries:', queries.length, 'primary:', queries[0]);
+  return runNext().then(function (id) {
+    if (id) {
+      console.log('[CEE MATCH]', id, 'confident');
+      return id;
     }
-    console.log('[CEE MATCH]', best.id, best.exactExternal ? 'exact external ID' : 'score: ' + best.score);
-    return best.id;
+    if (best) {
+      console.log('[CEE MATCH]', best.id, 'best fallback score:', best.score);
+      return best.id;
+    }
+    console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
+    return null;
   });
 }
 function numberOf(value) {
@@ -723,7 +761,7 @@ function buildStreams(files, details, videoId, type, season, episode) {
   return streams;
 }
 
-function fetchCeeStreams(type, id, season, episode, suppliedMeta) {
+function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
   const startedAt = Date.now();
   const kind = mediaKind(type);
   const parsed = parseInputId(id);
@@ -731,10 +769,10 @@ function fetchCeeStreams(type, id, season, episode, suppliedMeta) {
   const targetEpisode = parsed.episode != null ? parsed.episode : (parsed.absoluteEpisode != null ? parsed.absoluteEpisode : episode);
   console.log('[CEE TIMING] start', kind, id);
 
-  return resolveMetadata(parsed, kind, suppliedMeta).then(function (meta) {
+  return resolveMetadata(parsed, kind, suppliedMeta, signal).then(function (meta) {
     console.log('[CEE TIMING] metadata', Date.now() - startedAt, 'ms');
     if (meta.directNb) return { meta: meta, baseId: meta.directNb };
-    return searchCee(meta, kind).then(function (baseId) {
+    return searchCee(meta, kind, signal).then(function (baseId) {
       console.log('[CEE TIMING] search', Date.now() - startedAt, 'ms');
       return { meta: meta, baseId: baseId };
     });
@@ -773,13 +811,15 @@ const ceeProvider = {
   id: 'cee',
   name: 'CEE',
   priority: 100,
+  skipTimeoutTimer: true,
   getStreams: function (context) {
-    return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode, context.suppliedMeta);
+    return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode,
+      context.suppliedMeta, context.signal);
   }
 };
 const ceeEngine = createProviderEngine({
   providers: [ceeProvider],
-  providerTimeoutMs: 45000,
+  providerTimeoutMs: 25000,
   failureThreshold: 2,
   cooldownMs: 30000
 });
