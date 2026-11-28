@@ -5,7 +5,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 ## Provider details
 
 - Provider ID: `cee`
-- Version: `2.0.2`
+- Version: `2.0.5`
 - Author: `HashimFaisal`
 - Supported media: movies and TV series
 - CEE API: `https://cee.buzz/api/android`
@@ -16,7 +16,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 The provider follows the request and resolution flow used by the standalone Cinemana plugin, while remaining connected only to CEE:
 
 - Bounded in-memory LRU caching with in-flight request coalescing for metadata, title searches, episode lists, and player responses.
-- CinemaBox-style ordered title search: primary title first, stop immediately on a confident first-page match, then try year-qualified and alternate-title fallbacks only when needed.
+- CinemaBox-style ordered title search: primary title first, stop immediately on a confident first-page match, then run year-qualified and alternate-title fallbacks concurrently only when needed.
 - Abort-aware request flow and a bounded provider deadline so a slow alias lookup cannot hold the source test open indefinitely.
 - Arabic-aware title normalization and confidence-based matching.
 - IMDb metadata through Cinemeta; TMDB numeric IDs use the Nuvio runtime's `TMDB_API_KEY`.
