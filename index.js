@@ -919,11 +919,14 @@ function safeHeaderMap(value) {
 }
 
 function playbackProxyHeaders(file) {
-  const requestHeaders = safeHeaderMap(file && file.requestHeaders);
+  // CEE CDN links may require the same playback request headers that passed
+  // direct Range tests. Keep API-provided headers authoritative when present.
+  const requestHeaders = Object.assign({
+    'User-Agent': USER_AGENT,
+    Referer: 'https://nuvio.tv/'
+  }, safeHeaderMap(file && file.requestHeaders) || {});
   const responseHeaders = safeHeaderMap(file && file.responseHeaders);
-  if (!requestHeaders && !responseHeaders) return null;
-  const result = {};
-  if (requestHeaders) result.request = requestHeaders;
+  const result = { request: requestHeaders };
   if (responseHeaders) result.response = responseHeaders;
   return result;
 }
