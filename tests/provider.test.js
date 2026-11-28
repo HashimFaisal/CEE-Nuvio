@@ -91,8 +91,14 @@ async function main() {
     assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 4K', 'CEE · 1080p', 'CEE · 720p']);
     assert.strictEqual(movie.length, 3, 'duplicate stream URLs must be removed while retaining available 4K sources');
     assert.strictEqual(detailsRequests, 0, 'playback resolution must not wait for unused allVideoInfo metadata');
-    assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'quality', 'title', 'url'],
-      'CEE stream objects should expose CinemaBox-compatible quality metadata');
+    assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['behaviorHints', 'name', 'quality', 'title', 'url'],
+      'CEE stream objects should expose CinemaBox-compatible quality metadata and playback headers');
+    assert.deepStrictEqual(movie[0].behaviorHints.proxyHeaders, {
+      request: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36',
+        Referer: 'https://nuvio.tv/'
+      }
+    }, 'default playback request headers must be supplied when the API omits them');
 
     const originalFetchForHeaders = global.fetch;
     global.fetch = async function (url) {
@@ -116,9 +122,13 @@ async function main() {
     };
     const headerStreams = await getStreams({ tmdbId: 'tt3333333', mediaType: 'movie' });
     assert.deepStrictEqual(headerStreams[0].behaviorHints.proxyHeaders, {
-      request: { Referer: 'https://cee.buzz/', Authorization: 'Bearer test' },
+      request: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36',
+        Referer: 'https://cee.buzz/',
+        Authorization: 'Bearer test'
+      },
       response: { 'Content-Type': 'video/mp4' }
-    }, 'explicit playback request/response headers must be forwarded to Nuvio');
+    }, 'explicit playback headers must override defaults and be forwarded to Nuvio');
     global.fetch = originalFetchForHeaders;
 
     assert.strictEqual(detailsRequests, 0, 'optional details endpoint must remain outside the playback path');
