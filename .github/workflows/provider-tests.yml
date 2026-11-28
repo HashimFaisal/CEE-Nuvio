@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "experiment/**"
+      - "engine-v3"
 
 jobs:
   provider-tests:
@@ -18,4 +19,4 @@ jobs:
         with:
           node-version: 20
       - name: Run offline provider regression tests
-        run: node tests/provider.test.js
+        run: node tests/provider.test.js && node tests/provider-engine.test.js
