@@ -26,7 +26,8 @@ function normalizeStream(stream, provider) {
   const output = {
     name: String(stream.name || label),
     title: String(stream.title || quality + ' • ' + provider.name),
-    url: stream.url
+    url: stream.url,
+    quality: quality
   };
   if (stream.behaviorHints && typeof stream.behaviorHints === 'object') {
     output.behaviorHints = stream.behaviorHints;
