@@ -640,10 +640,10 @@ function numberOf(value) {
   return match ? Number(match[0]) : null;
 }
 
-function resolveEpisode(seriesId, season, episode) {
+function resolveEpisode(seriesId, season, episode, signal) {
   if (season == null || episode == null) return Promise.resolve(null);
   return cached('episodes-' + seriesId, function () {
-    return api('videoSeason/id/' + encodeURIComponent(seriesId)).then(listFrom);
+    return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal }).then(listFrom);
   }, 600000).then(function (episodes) {
     const matches = episodes.filter(function (item) {
       const itemSeason = numberOf(item && (item.season != null ? item.season : item.seasonNumber));
@@ -668,15 +668,15 @@ function getDetails(videoId) {
   }, 600000);
 }
 
-function getVideoFiles(videoId) {
+function getVideoFiles(videoId, signal) {
   return cached('player-' + videoId, function () {
-    return api('transcoddedFiles/id/' + encodeURIComponent(videoId)).then(listFrom).then(function (files) {
+    return api('transcoddedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom).then(function (files) {
       if (files.length) return files;
       console.log('[CEE PLAYER] primary endpoint empty; trying alternate spelling');
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId)).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom);
     }).catch(function (firstError) {
       console.log('[CEE PLAYER] primary endpoint failed; trying alternate spelling:', firstError.message);
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId)).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom);
     });
   }, 30000);
 }
@@ -782,12 +782,12 @@ function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
       return [];
     }
     const videoIdPromise = kind === 'tv'
-      ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode)
+      ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode, signal)
       : Promise.resolve(resolved.baseId);
     return videoIdPromise.then(function (videoId) {
       console.log('[CEE TIMING] episode', Date.now() - startedAt, 'ms');
       if (!videoId) return [];
-      return getVideoFiles(videoId).then(function (files) {
+      return getVideoFiles(videoId, signal).then(function (files) {
         const streams = (!files || !files.length)
           ? []
           : buildStreams(files, null, videoId, kind, targetSeason, targetEpisode);
