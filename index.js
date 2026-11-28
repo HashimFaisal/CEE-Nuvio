@@ -369,9 +369,9 @@ function resolveMal(malId, absoluteEpisode, signal) {
       body: JSON.stringify({
         query: 'query($idMal: Int){Media(idMal:$idMal,type:ANIME){startDate{year} title{romaji english native}}}',
         variables: { idMal: Number(malId) }
-      })
-    },
-    signal ? { signal: signal } : undefined).then(function (response) {
+      }),
+      signal: signal
+    }).then(function (response) {
       const media = response && response.data && response.data.Media;
       if (!media) throw new Error('No AniList metadata for MAL ' + malId);
       const titles = [];
@@ -811,7 +811,6 @@ const ceeProvider = {
   id: 'cee',
   name: 'CEE',
   priority: 100,
-  skipTimeoutTimer: true,
   getStreams: function (context) {
     return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode,
       context.suppliedMeta, context.signal);
