@@ -5,7 +5,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 ## Provider details
 
 - Provider ID: `cee`
-- Version: `3.1.1`
+- Version: `3.1.2`
 - Author: `HashimFaisal`
 - Supported media: movies and TV series
 - CEE API: `https://cee.buzz/api/android`
@@ -51,3 +51,10 @@ node tests/provider.test.js
 The offline tests cover movie and episode resolution, quality ordering, duplicate URL removal, explicit playback-header forwarding, primary-query early stop, ordered fallback search, metadata fast paths, and rejection of ambiguous episode matches, plus early return on exact external-ID fallbacks.
 
 Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Header forwarding is conditional on CEE returning those explicit fields; it does not prove that CEE requires them or that it will increase throughput.
+
+
+### 3.1.2 — Nuvio timer-safe HTTP lifecycle
+
+- Match CinemaBox's embedded-runtime request pattern: no per-request timeout timers or `Promise.race` wrappers around successful HTTP calls.
+- Keep deadline checks before requests and after response-body reads, with bounded retries for transient GET failures.
+- Add a regression test asserting the successful playback path schedules no per-request timeout handles.

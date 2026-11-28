@@ -303,12 +303,18 @@ function ensureBudget(deadline, stage) {
 function request(url, options) {
   const opts = options || {};
   const method = String(opts.method || 'GET').toUpperCase();
-  const maxAttempts = method === 'GET' && opts.retry !== false ? Math.max(1, Math.min(2, Number(opts.maxAttempts) || 2)) : 1;
+  const maxAttempts = method === 'GET' && opts.retry !== false
+    ? Math.max(1, Math.min(2, Number(opts.maxAttempts) || 2))
+    : 1;
   const retryableStatus = [408, 425, 429, 500, 502, 503, 504];
   const safeUrl = String(url).replace(/([?&]api_key=)[^&]*/gi, '$1[REDACTED]');
   const requestLabel = (function () {
-    try { const parsed = new URL(url); return parsed.hostname + parsed.pathname; }
-    catch (_) { return 'unknown-endpoint'; }
+    try {
+      const parsed = new URL(url);
+      return parsed.hostname + parsed.pathname;
+    } catch (_) {
+      return 'unknown-endpoint';
+    }
   })();
   const headers = Object.assign({
     Accept: 'application/json, text/plain, */*',
@@ -320,38 +326,11 @@ function request(url, options) {
   function attempt(number) {
     ensureBudget(opts.deadline, 'HTTP request');
     const startedAt = Date.now();
-    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    // Match CinemaBox's Nuvio-safe request lifecycle: do not create a
+    // per-request setTimeout/Promise.race. Nuvio's embedded timer runtime
+    // can retain cleared timeout handles and delay scraper completion.
     const fetchOptions = { method: method, headers: headers, body: opts.body };
-    if (controller) fetchOptions.signal = controller.signal;
-    else if (opts.signal) fetchOptions.signal = opts.signal;
-    let parentAbort;
-    if (controller && opts.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else if (typeof opts.signal.addEventListener === 'function') {
-        parentAbort = function () { controller.abort(); };
-        opts.signal.addEventListener('abort', parentAbort);
-      }
-    }
-
-    let timer;
-    let timedOut = false;
-    const timeoutMs = Math.max(1, Math.min(Number(opts.timeoutMs) || 10000,
-      Number.isFinite(opts.deadline) ? opts.deadline - Date.now() : 10000));
-    function cleanup() {
-      if (timer !== undefined) clearTimeout(timer);
-      if (parentAbort && opts.signal && typeof opts.signal.removeEventListener === 'function') {
-        opts.signal.removeEventListener('abort', parentAbort);
-        parentAbort = null;
-      }
-    }
-    const timeoutPromise = new Promise(function (_, reject) {
-      timer = setTimeout(function () {
-        timedOut = true;
-        if (controller) controller.abort();
-        reject(new Error('CEE_HTTP_TIMEOUT'));
-      }, timeoutMs);
-    });
-    const work = fetch(url, fetchOptions).then(function (response) {
+    return fetch(url, fetchOptions).then(function (response) {
       return response.text().then(function (body) {
         ensureBudget(opts.deadline, 'HTTP response body');
         console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
@@ -360,27 +339,28 @@ function request(url, options) {
           error.status = response.status;
           throw error;
         }
-        try { return JSON.parse(body); }
-        catch (error) { throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250)); }
+        try {
+          return JSON.parse(body);
+        } catch (_) {
+          throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250));
+        }
       });
-    });
-    return Promise.race([work, timeoutPromise]).catch(function (error) {
+    }).catch(function (error) {
       const errorMessage = String(error && error.message || error);
-      const transientNetwork = !error.status && /fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed|CEE_HTTP_TIMEOUT/i.test(errorMessage);
-      const retryable = retryableStatus.indexOf(Number(error.status)) !== -1 || transientNetwork || timedOut;
-      if (number < maxAttempts && retryable && !(opts.signal && opts.signal.aborted)) {
-        cleanup();
-        const retryAfter = Number(error.retryAfterMs) || 0;
-        const delay = Math.min(500, Math.max(150, retryAfter || 200 * number));
+      const transientNetwork = !error.status &&
+        /fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed/i.test(errorMessage);
+      const retryable = retryableStatus.indexOf(Number(error.status)) !== -1 || transientNetwork;
+      if (number < maxAttempts && retryable) {
+        const delay = Math.min(500, 200 * number);
         ensureBudget(opts.deadline, 'HTTP retry');
         console.log('[CEE HTTP] retry', number + 1, 'of', maxAttempts, requestLabel,
-          error.status || (timedOut ? 'timeout' : 'network'));
+          error.status || 'network');
         return new Promise(function (resolve) { setTimeout(resolve, delay); })
           .then(function () { return attempt(number + 1); });
       }
       console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
       throw error;
-    }).finally(cleanup);
+    });
   }
   return attempt(1);
 }
