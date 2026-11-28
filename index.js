@@ -390,8 +390,41 @@ function resolveMal(malId, absoluteEpisode) {
   }, 600000);
 }
 
-function resolveMetadata(parsed, type) {
+function metadataFromInput(input, parsed) {
+  const supplied = input && input.meta && typeof input.meta === 'object' ? input.meta : input || {};
+  const titles = [];
+  [supplied.name, supplied.title, supplied.original_name, supplied.original_title,
+    supplied.originalTitle, supplied.english_name, supplied.englishName,
+    supplied.arabic_name, supplied.ar_title].forEach(function (value) {
+    const title = String(value || '').trim();
+    if (title && titles.indexOf(title) === -1) titles.push(title);
+  });
+  const year = yearFrom(supplied.year || supplied.release_date || supplied.releaseDate || supplied.released);
+  if (!titles.length) return null;
+  return {
+    tmdbId: parsed.tmdbId || null,
+    imdbId: parsed.imdbId || imdbFrom(supplied.imdb_id || supplied.imdbId || supplied.imdb),
+    malId: parsed.malId || null,
+    titles: titles,
+    year: year,
+    season: parsed.season,
+    episode: parsed.episode,
+    absoluteEpisode: parsed.absoluteEpisode
+  };
+}
+
+function resolveMetadata(parsed, type, suppliedMeta) {
   if (parsed.directNb) return Promise.resolve(parsed);
+  if (suppliedMeta && suppliedMeta.titles && suppliedMeta.titles.length) {
+    console.log('[CEE METADATA] using Nuvio-supplied metadata; skipping external metadata request');
+    return Promise.resolve(Object.assign({}, suppliedMeta, {
+      imdbId: parsed.imdbId || suppliedMeta.imdbId || null,
+      malId: parsed.malId || suppliedMeta.malId || null,
+      tmdbId: parsed.tmdbId || suppliedMeta.tmdbId || null,
+      season: parsed.season != null ? parsed.season : suppliedMeta.season,
+      episode: parsed.episode != null ? parsed.episode : suppliedMeta.episode
+    }));
+  }
   if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode);
 
   const kind = mediaKind(type);
@@ -690,7 +723,7 @@ function buildStreams(files, details, videoId, type, season, episode) {
   return streams;
 }
 
-function fetchCeeStreams(type, id, season, episode) {
+function fetchCeeStreams(type, id, season, episode, suppliedMeta) {
   const startedAt = Date.now();
   const kind = mediaKind(type);
   const parsed = parseInputId(id);
@@ -698,7 +731,7 @@ function fetchCeeStreams(type, id, season, episode) {
   const targetEpisode = parsed.episode != null ? parsed.episode : (parsed.absoluteEpisode != null ? parsed.absoluteEpisode : episode);
   console.log('[CEE TIMING] start', kind, id);
 
-  return resolveMetadata(parsed, kind).then(function (meta) {
+  return resolveMetadata(parsed, kind, suppliedMeta).then(function (meta) {
     console.log('[CEE TIMING] metadata', Date.now() - startedAt, 'ms');
     if (meta.directNb) return { meta: meta, baseId: meta.directNb };
     return searchCee(meta, kind).then(function (baseId) {
@@ -741,7 +774,7 @@ const ceeProvider = {
   name: 'CEE',
   priority: 100,
   getStreams: function (context) {
-    return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode);
+    return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode, context.suppliedMeta);
   }
 };
 const ceeEngine = createProviderEngine({
@@ -756,11 +789,14 @@ function getStreams(input, mediaType, season, episode) {
     ? input
     : { tmdbId: input, mediaType: mediaType, season: season, episode: episode };
   const id = args.tmdbId != null ? args.tmdbId : (args.id != null ? args.id : args.imdbId);
+  const parsed = parseInputId(id);
+  const suppliedMeta = metadataFromInput(args, parsed);
   return ceeEngine.getStreams({
     mediaType: args.mediaType || args.type || 'movie',
     id: id,
     season: args.season,
-    episode: args.episode
+    episode: args.episode,
+    suppliedMeta: suppliedMeta
   }).then(function (result) {
     return result.streams;
   });
