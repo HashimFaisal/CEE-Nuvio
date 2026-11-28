@@ -6,7 +6,7 @@
  */
 
 
-// Bundled CEE provider engine. Kept in sync with engine/provider-engine.js for Nuvio's single-file runtime.
+// Bundled CEE provider engine. Keep in sync with engine/provider-engine.js for Nuvio's single-file runtime.
 'use strict';
 
 const QUALITY = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '576p': 576, '480p': 480, '360p': 360, '240p': 240 };
@@ -77,10 +77,12 @@ function createProviderEngine(options) {
   const schedule = config.setTimeout || (typeof setTimeout === 'function' ? setTimeout : function () { return null; });
   const cancel = config.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : function () {});
   const health = new Map();
+  const providerById = new Map();
 
   providers.forEach(provider => {
     if (!provider || !/^[a-z0-9][a-z0-9._-]*$/i.test(String(provider.id || '')) ||
         typeof provider.getStreams !== 'function') throw new TypeError('Invalid provider contract');
+    providerById.set(provider.id, provider);
     if (!health.has(provider.id)) health.set(provider.id, {
       failures: 0, openUntil: 0, attempts: 0, successes: 0, validStreams: 0,
       emptyResponses: 0, errorCount: 0, timeoutCount: 0, rejectedStreams: 0,
@@ -203,9 +205,25 @@ function createProviderEngine(options) {
     results.forEach(result => (result && result.streams || []).forEach(stream => {
       if (seen.has(stream.url)) return;
       seen.add(stream.url);
-      streams.push(stream);
+      streams.push(Object.assign({}, stream, { _providerId: result.providerId }));
     }));
-    streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+    streams.sort((a, b) => {
+      const qualityDifference = qualityRank(b.quality) - qualityRank(a.quality);
+      if (qualityDifference) return qualityDifference;
+      const providerA = providerById.get(a._providerId);
+      const providerB = providerById.get(b._providerId);
+      const priorityDifference = Number(providerB && providerB.priority || 0) - Number(providerA && providerA.priority || 0);
+      if (priorityDifference) return priorityDifference;
+      const healthA = health.get(a._providerId);
+      const healthB = health.get(b._providerId);
+      const productiveA = healthA && healthA.attempts ? healthA.successes / healthA.attempts : 0;
+      const productiveB = healthB && healthB.attempts ? healthB.successes / healthB.attempts : 0;
+      if (productiveB !== productiveA) return productiveB - productiveA;
+      const latencyA = healthA && healthA.latencyEwmaMs != null ? healthA.latencyEwmaMs : Infinity;
+      const latencyB = healthB && healthB.latencyEwmaMs != null ? healthB.latencyEwmaMs : Infinity;
+      return latencyA - latencyB;
+    });
+    streams.forEach(stream => { delete stream._providerId; });
     return { streams, providers: results };
   }
 
@@ -284,8 +302,9 @@ function ensureBudget(deadline, stage) {
 
 function request(url, options) {
   const opts = options || {};
-  ensureBudget(opts.deadline, 'HTTP request');
-  const startedAt = Date.now();
+  const method = String(opts.method || 'GET').toUpperCase();
+  const maxAttempts = method === 'GET' && opts.retry !== false ? Math.max(1, Math.min(2, Number(opts.maxAttempts) || 2)) : 1;
+  const retryableStatus = [408, 425, 429, 500, 502, 503, 504];
   const safeUrl = String(url).replace(/([?&]api_key=)[^&]*/gi, '$1[REDACTED]');
   const requestLabel = (function () {
     try { const parsed = new URL(url); return parsed.hostname + parsed.pathname; }
@@ -297,30 +316,69 @@ function request(url, options) {
     Referer: baseUrl() + '/',
     Origin: baseUrl()
   }, opts.headers || {});
-  const fetchOptions = {
-    method: opts.method || 'GET',
-    headers: headers,
-    body: opts.body
-  };
-  if (opts.signal) fetchOptions.signal = opts.signal;
 
-  return fetch(url, fetchOptions).then(function (response) {
-    return response.text().then(function (body) {
-      ensureBudget(opts.deadline, 'HTTP response body');
-      console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
-      if (!response.ok) {
-        throw new Error('HTTP ' + response.status + ' ' + safeUrl + ' :: ' + body.slice(0, 500));
+  function attempt(number) {
+    ensureBudget(opts.deadline, 'HTTP request');
+    const startedAt = Date.now();
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const fetchOptions = { method: method, headers: headers, body: opts.body };
+    if (controller) fetchOptions.signal = controller.signal;
+    else if (opts.signal) fetchOptions.signal = opts.signal;
+    let parentAbort;
+    if (controller && opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else if (typeof opts.signal.addEventListener === 'function') {
+        parentAbort = function () { controller.abort(); };
+        opts.signal.addEventListener('abort', parentAbort);
       }
-      try {
-        return JSON.parse(body);
-      } catch (error) {
-        throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250));
+    }
+
+    let timer;
+    let timedOut = false;
+    const timeoutMs = Math.max(1, Math.min(Number(opts.timeoutMs) || 10000,
+      Number.isFinite(opts.deadline) ? opts.deadline - Date.now() : 10000));
+    const timeoutPromise = new Promise(function (_, reject) {
+      timer = setTimeout(function () {
+        timedOut = true;
+        if (controller) controller.abort();
+        reject(new Error('CEE_HTTP_TIMEOUT'));
+      }, timeoutMs);
+    });
+    const work = fetch(url, fetchOptions).then(function (response) {
+      return response.text().then(function (body) {
+        ensureBudget(opts.deadline, 'HTTP response body');
+        console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
+        if (!response.ok) {
+          const error = new Error('HTTP ' + response.status + ' ' + safeUrl + ' :: ' + body.slice(0, 500));
+          error.status = response.status;
+          throw error;
+        }
+        try { return JSON.parse(body); }
+        catch (error) { throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250)); }
+      });
+    });
+    return Promise.race([work, timeoutPromise]).catch(function (error) {
+      const transientNetwork = !error.status && !/aborted|aborterror|CEE time budget exceeded/i.test(String(error && error.message || error));
+      const retryable = retryableStatus.indexOf(Number(error.status)) !== -1 || transientNetwork || timedOut;
+      if (number < maxAttempts && retryable && !(opts.signal && opts.signal.aborted)) {
+        const retryAfter = Number(error.retryAfterMs) || 0;
+        const delay = Math.min(500, Math.max(150, retryAfter || 200 * number));
+        ensureBudget(opts.deadline, 'HTTP retry');
+        console.log('[CEE HTTP] retry', number + 1, 'of', maxAttempts, requestLabel,
+          error.status || (timedOut ? 'timeout' : 'network'));
+        return new Promise(function (resolve) { setTimeout(resolve, delay); })
+          .then(function () { return attempt(number + 1); });
+      }
+      console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
+      throw error;
+    }).finally(function () {
+      if (timer !== undefined) clearTimeout(timer);
+      if (parentAbort && opts.signal && typeof opts.signal.removeEventListener === 'function') {
+        opts.signal.removeEventListener('abort', parentAbort);
       }
     });
-  }).catch(function (error) {
-    console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
-    throw error;
-  });
+  }
+  return attempt(1);
 }
 
 function api(path, options) {
@@ -615,15 +673,16 @@ function searchCee(meta, type, signal, deadline) {
     ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1)
     : '1900,' + new Date().getFullYear();
 
-  function searchOne(term) {
+  function searchOne(term, page) {
+    const pageNumber = Number(page) || 0;
     const encoded = encodeURIComponent(term);
     const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
       '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
-      '&page=0&type=' + apiType + '&itemsPerPage=12';
-    return cached('search-' + apiType + '-' + normalizeTitle(term) + '-' + yearRange, function () {
+      '&page=' + pageNumber + '&type=' + apiType + '&itemsPerPage=12';
+    return cached('search-' + apiType + '-' + normalizeTitle(term) + '-' + yearRange + '-page-' + pageNumber, function () {
       return api(path, { signal: signal, deadline: deadline }).then(listFrom);
     }, 600000).catch(function (error) {
-      console.error('[CEE SEARCH]', term, error.message);
+      console.error('[CEE SEARCH]', term, 'page:', pageNumber, error.message);
       return [];
     });
   }
@@ -715,15 +774,23 @@ function searchCee(meta, type, signal, deadline) {
     if (queries.length === 1) return primaryMatch ? primaryMatch.id : null;
     const fallbackQueries = queries.slice(1);
     const fallbackStarted = Date.now();
-    return Promise.all(fallbackQueries.map(function (term) {
-      return searchOne(term).then(function (items) {
+    const fallbackTasks = fallbackQueries.map(function (term) {
+      return searchOne(term, 0).then(function (items) {
         const match = rankMatches([items]);
         console.log('[CEE SEARCH TRACE] fallback', term, 'elapsedMs:', Date.now() - fallbackStarted,
           'results:', items.length, 'best:', match ? match.id : 'none',
           'score:', match ? match.score : 'n/a');
         return { items: items, match: match };
       });
-    })).then(function (fallbackResults) {
+    });
+    // Only pay for a second page when the first page is full and no strong match exists.
+    if (primaryItems.length >= 12) {
+      fallbackTasks.push(searchOne(queries[0], 1).then(function (items) {
+        console.log('[CEE SEARCH TRACE] primary page 2 results:', items.length);
+        return { items: items, match: rankMatches([items]) };
+      }));
+    }
+    return Promise.all(fallbackTasks).then(function (fallbackResults) {
       const allLists = [primaryItems].concat(fallbackResults.map(function (result) {
         return result.items;
       }));
@@ -731,7 +798,7 @@ function searchCee(meta, type, signal, deadline) {
       const strongFallback = fallbackResults.map(function (result) { return result.match; })
         .filter(isStrong).sort(function (a, b) { return b.score - a.score; })[0];
       console.log('[CEE SEARCH TRACE] parallel fallbacks completed in',
-        Date.now() - fallbackStarted, 'ms; count:', fallbackQueries.length);
+        Date.now() - fallbackStarted, 'ms; count:', fallbackTasks.length);
       return strongFallback ? strongFallback.id : (bestMatch ? bestMatch.id : null);
     });
   }).then(function (id) {
@@ -748,21 +815,37 @@ function numberOf(value) {
   return match ? Number(match[0]) : null;
 }
 
+function episodeCoordinates(item) {
+  const explicitSeason = numberOf(item && (item.season != null ? item.season : item.seasonNumber));
+  const explicitEpisode = numberOf(item && (item.episodeNummer != null
+    ? item.episodeNummer
+    : (item.episodeNumber != null ? item.episodeNumber : item.episode)));
+  const text = [item && item.description, item && item.name, item && item.title,
+    item && item.episodeTitle, item && item.label].filter(Boolean).join(' ');
+  const paired = text.match(/\bS\s*0*(\d{1,2})\s*E\s*0*(\d{1,3})\b/i) ||
+    text.match(/\b(\d{1,2})\s*[xX]\s*0*(\d{1,3})\b/);
+  const labelledEpisode = text.match(/\b(?:episode|ep)\s*0*(\d{1,3})\b/i) ||
+    text.match(/الحلقة\s*0*(\d{1,3})/);
+  const seasonFromText = paired ? Number(paired[1]) : null;
+  const episodeFromText = paired ? Number(paired[2]) : (labelledEpisode ? Number(labelledEpisode[1]) : null);
+  return {
+    season: explicitSeason != null ? explicitSeason : seasonFromText,
+    episode: explicitEpisode != null ? explicitEpisode : episodeFromText
+  };
+}
+
 function resolveEpisode(seriesId, season, episode, signal, deadline) {
   if (season == null || episode == null) return Promise.resolve(null);
   return cached('episodes-' + seriesId, function () {
     return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal, deadline: deadline }).then(listFrom);
   }, 600000).then(function (episodes) {
     const matches = episodes.filter(function (item) {
-      const itemSeason = numberOf(item && (item.season != null ? item.season : item.seasonNumber));
-      const itemEpisode = numberOf(item && (item.episodeNummer != null
-        ? item.episodeNummer
-        : (item.episodeNumber != null ? item.episodeNumber : item.episode)));
-      return itemSeason === Number(season) && itemEpisode === Number(episode) &&
+      const coordinates = episodeCoordinates(item);
+      return coordinates.season === Number(season) && coordinates.episode === Number(episode) &&
         item.nb != null && String(item.nb) !== '';
     });
     if (matches.length !== 1) {
-      console.log('[CEE EPISODE] exact match required; found:', matches.length,
+      console.log('[CEE EPISODE] unique season/episode match required; found:', matches.length,
         'season:', season, 'episode:', episode);
       return null;
     }
