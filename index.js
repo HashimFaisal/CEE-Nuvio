@@ -155,43 +155,75 @@ function tmdbKey() {
   return String(injected || '').trim();
 }
 
+const CACHE_MAX_ENTRIES = 500;
+
 function cached(key, loader, ttl) {
   const now = Date.now();
   const previous = cache.get(key);
-  if (previous && now - previous.time < ttl) return previous.value;
-
-  const pending = Promise.resolve().then(loader).catch(function (error) {
+  if (previous && (previous.pending || now < previous.expiresAt)) {
     cache.delete(key);
+    cache.set(key, previous);
+    return previous.value;
+  }
+  if (previous) cache.delete(key);
+
+  const entry = { pending: true, expiresAt: 0, value: null };
+  const value = Promise.resolve().then(loader).then(function (result) {
+    if (cache.get(key) === entry) {
+      entry.pending = false;
+      entry.expiresAt = Date.now() + Math.max(0, Number(ttl) || 0);
+    }
+    return result;
+  }).catch(function (error) {
+    if (cache.get(key) === entry) cache.delete(key);
     throw error;
   });
-  cache.set(key, { time: now, value: pending });
-  return pending;
+  entry.value = value;
+  cache.set(key, entry);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === key && cache.size === 1) break;
+    cache.delete(oldestKey);
+  }
+  return value;
 }
 
 function request(url, options) {
   const opts = options || {};
+  const startedAt = Date.now();
+  const safeUrl = String(url).replace(/([?&]api_key=)[^&]*/gi, '$1[REDACTED]');
+  const requestLabel = (function () {
+    try { const parsed = new URL(url); return parsed.hostname + parsed.pathname; }
+    catch (_) { return 'unknown-endpoint'; }
+  })();
   const headers = Object.assign({
     Accept: 'application/json, text/plain, */*',
     'User-Agent': USER_AGENT,
     Referer: baseUrl() + '/',
     Origin: baseUrl()
   }, opts.headers || {});
-
-  return fetch(url, {
+  const fetchOptions = {
     method: opts.method || 'GET',
     headers: headers,
     body: opts.body
-  }).then(function (response) {
+  };
+  if (opts.signal) fetchOptions.signal = opts.signal;
+
+  return fetch(url, fetchOptions).then(function (response) {
     return response.text().then(function (body) {
+      console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
       if (!response.ok) {
-        throw new Error('HTTP ' + response.status + ' ' + url + ' :: ' + body.slice(0, 500));
+        throw new Error('HTTP ' + response.status + ' ' + safeUrl + ' :: ' + body.slice(0, 500));
       }
       try {
         return JSON.parse(body);
       } catch (error) {
-        throw new Error('Invalid JSON from ' + url + ' :: ' + body.slice(0, 250));
+        throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250));
       }
     });
+  }).catch(function (error) {
+    console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
+    throw error;
   });
 }
 
@@ -659,29 +691,37 @@ function buildStreams(files, details, videoId, type, season, episode) {
 }
 
 function fetchCeeStreams(type, id, season, episode) {
+  const startedAt = Date.now();
   const kind = mediaKind(type);
   const parsed = parseInputId(id);
   const targetSeason = parsed.season != null ? parsed.season : season;
   const targetEpisode = parsed.episode != null ? parsed.episode : (parsed.absoluteEpisode != null ? parsed.absoluteEpisode : episode);
+  console.log('[CEE TIMING] start', kind, id);
 
   return resolveMetadata(parsed, kind).then(function (meta) {
+    console.log('[CEE TIMING] metadata', Date.now() - startedAt, 'ms');
     if (meta.directNb) return { meta: meta, baseId: meta.directNb };
     return searchCee(meta, kind).then(function (baseId) {
+      console.log('[CEE TIMING] search', Date.now() - startedAt, 'ms');
       return { meta: meta, baseId: baseId };
     });
   }).then(function (resolved) {
-    if (!resolved.baseId) return [];
+    if (!resolved.baseId) {
+      console.log('[CEE TIMING] no-match', Date.now() - startedAt, 'ms');
+      return [];
+    }
     const videoIdPromise = kind === 'tv'
       ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode)
       : Promise.resolve(resolved.baseId);
     return videoIdPromise.then(function (videoId) {
+      console.log('[CEE TIMING] episode', Date.now() - startedAt, 'ms');
       if (!videoId) return [];
-      // Playback needs the player file list only. The allVideoInfo endpoint
-      // is metadata (titles/subtitles) and is not used to construct stream URLs.
-      // Do not make playback wait for an unrelated request.
       return getVideoFiles(videoId).then(function (files) {
-        if (!files || !files.length) return [];
-        return buildStreams(files, null, videoId, kind, targetSeason, targetEpisode);
+        const streams = (!files || !files.length)
+          ? []
+          : buildStreams(files, null, videoId, kind, targetSeason, targetEpisode);
+        console.log('[CEE TIMING] total', Date.now() - startedAt, 'ms', 'streams:', streams.length);
+        return streams;
       });
     });
   }).catch(function (error) {
