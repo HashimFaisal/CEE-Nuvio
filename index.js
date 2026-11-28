@@ -6,13 +6,63 @@
  */
 
 
-// Bundled CEE provider engine. Source: engine/provider-engine.js.
-// Nuvio loads a single index.js, so this orchestration layer is bundled here.
+// Bundled CEE provider engine. Kept in sync with engine/provider-engine.js for Nuvio's single-file runtime.
+'use strict';
+
+const QUALITY = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '576p': 576, '480p': 480, '360p': 360, '240p': 240 };
+
+function normalizeQuality(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return 'Video';
+  let match = raw.match(/^(?:4\s*k|uhd)(?:\s+(.+))?$/i);
+  if (match) return '2160p' + (match[1] ? ' ' + match[1].trim() : '');
+  match = raw.match(/^(\d{3,4})\s*p(?:\s+(.+))?$/i);
+  return match ? match[1] + 'p' + (match[2] ? ' ' + match[2].trim() : '') : raw;
+}
+
+function qualityRank(value) {
+  const match = normalizeQuality(value).match(/^(\d{3,4})p/i);
+  return match ? Number(match[1]) : (QUALITY[String(value).toLowerCase()] || -1);
+}
+
+function validStreamUrl(value) {
+  if (typeof value !== 'string' || !value || value !== value.trim() || /\s|\\/.test(value)) return false;
+  const protocolEnd = value.indexOf('://');
+  if (protocolEnd < 0) return false;
+  const protocol = value.slice(0, protocolEnd).toLowerCase();
+  if (protocol !== 'http' && protocol !== 'https') return false;
+  const authority = value.slice(protocolEnd + 3).split(/[/?#]/, 1)[0];
+  if (!authority) return false;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      Boolean(parsed.hostname) && !parsed.username && !parsed.password;
+  } catch (_) { return false; }
+}
+
 function streamRejectionReason(stream) {
   if (!stream || typeof stream !== 'object') return 'invalid-item';
   if (typeof stream.url !== 'string' || !stream.url) return 'missing-url';
   if (!validStreamUrl(stream.url)) return 'invalid-url';
   return null;
+}
+
+function normalizeStream(stream, provider) {
+  if (!stream || !validStreamUrl(stream.url)) return null;
+  const quality = normalizeQuality(stream.quality || stream.resolution);
+  const label = String(provider.name || provider.id) + ' ' + quality;
+  const output = {
+    name: String(stream.name || label),
+    title: String(stream.title || label),
+    url: stream.url,
+    quality: quality
+  };
+  if (stream.behaviorHints && typeof stream.behaviorHints === 'object') output.behaviorHints = stream.behaviorHints;
+  if (stream.language) output.language = String(stream.language);
+  if (Array.isArray(stream.subtitles) && stream.subtitles.length) output.subtitles = stream.subtitles.slice();
+  if (Number.isFinite(Number(stream.sizeBytes)) && Number(stream.sizeBytes) > 0) output.sizeBytes = Number(stream.sizeBytes);
+  if (Number.isFinite(Number(stream.seeders)) && Number(stream.seeders) >= 0) output.seeders = Number(stream.seeders);
+  return output;
 }
 
 function createProviderEngine(options) {
