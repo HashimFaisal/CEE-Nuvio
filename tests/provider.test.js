@@ -261,6 +261,28 @@ async function main() {
       'supplied metadata fast path must skip TMDB/Cinemeta lookup');
     global.fetch = originalFetchForSuppliedMeta;
 
+    const originalFetchForRetry = global.fetch;
+    let transientAttempts = 0;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt6666666')) {
+        return response({ meta: { name: 'Retry Test', year: '2024' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        transientAttempts++;
+        if (transientAttempts === 1) return response({ error: 'temporary upstream error' }, false, 503);
+        return response([{ nb: 66, kind: 1, en_title: 'Retry Test', year: '2024', imdbUrlRef: 'tt6666666' }]);
+      }
+      if (value.includes('/transcoddedFiles/id/66')) {
+        return response([{ videoUrl: 'https://cdn.example/retry.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const retriedStreams = await getStreams({ tmdbId: 'tt6666666', mediaType: 'movie' });
+    assert.strictEqual(retriedStreams.length, 1, 'transient 503 responses should be retried once');
+    assert.strictEqual(transientAttempts, 2, 'GET retry policy must be bounded to one retry');
+    global.fetch = originalFetchForRetry;
+
     console.log('CEE provider tests passed');
   } finally {
     global.fetch = originalFetch;
