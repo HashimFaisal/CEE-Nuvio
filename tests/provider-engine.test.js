@@ -42,7 +42,7 @@ async function main() {
   const afterFailure = await failing.getStreams({});
   assert.strictEqual(calls, 1, 'open circuit must prevent repeated failing upstream requests');
   assert.strictEqual(afterFailure.providers[0].status, 'circuit-open');
-  assert.strictEqual(failing.getHealth().cee.errors, 1);
+  assert.strictEqual(failing.getHealth().cee.errorCount, 1);
 
 
   let aborted = false;
