@@ -188,8 +188,8 @@ async function main() {
     };
     const fallbackResult = await getStreams({ tmdbId: 'tt4444445', mediaType: 'movie' });
     assert.strictEqual(fallbackResult.length, 1, 'year-qualified fallback should resolve when the primary title search is empty');
-    assert.strictEqual(fallbackSearchRequests, 2,
-      'fallback search should run only after the primary title query fails to find a strong match');
+    assert.strictEqual(fallbackSearchRequests, 3,
+      'year-qualified and alternate-title fallbacks should run after a weak primary result');
     global.fetch = originalFetchForFallback;
 
     const originalFetchForParallelFallback = global.fetch;
