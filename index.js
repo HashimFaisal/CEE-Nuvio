@@ -566,10 +566,12 @@ function searchCee(meta, type, signal) {
 
       const candidateYear = yearFrom(item.year || item.releaseYear || item.releaseDate);
       let yearMatches = false;
+      let yearCompatible = true;
       if (meta.year && candidateYear) {
         const difference = Math.abs(Number(meta.year) - Number(candidateYear));
         if (difference > 1) return;
         yearMatches = difference === 0;
+        yearCompatible = difference <= 1;
         if (yearMatches) score += 0.12;
       }
 
@@ -582,7 +584,8 @@ function searchCee(meta, type, signal) {
         score: exactExternal ? 2 : (exact ? 1.5 : score),
         exactExternal: exactExternal,
         exactTitle: exact,
-        yearMatches: yearMatches
+        yearMatches: yearMatches,
+        yearCompatible: yearCompatible
       });
     });
 
@@ -596,11 +599,10 @@ function searchCee(meta, type, signal) {
   }
 
   function isStrong(match) {
-    return !!match && (match.exactExternal || (match.exactTitle && (!meta.year || match.yearMatches)));
+    return !!match && (match.exactExternal || (match.exactTitle && match.yearCompatible));
   }
 
   let best = null;
-  let completed = Promise.resolve();
   let queryIndex = 0;
 
   function runNext() {
