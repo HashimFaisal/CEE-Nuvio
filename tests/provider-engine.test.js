@@ -7,8 +7,8 @@ const { createCeeProvider } = require('../providers/cee');
 async function main() {
   const provider = createCeeProvider(async function () {
     return [
-      { name: 'CEE · 720p', title: '720p • CEE', url: 'https://cdn.example/720.mp4' },
-      { name: 'CEE · 1080p', title: '1080p • CEE', url: 'https://cdn.example/1080.mp4',
+      { name: 'CEE · 720p', title: '720p • CEE', url: 'https://cdn.example/720.mp4', quality: '720p' },
+      { name: 'CEE · 1080p', title: '1080p • CEE', url: 'https://cdn.example/1080.mp4', quality: '1080p',
         behaviorHints: { proxyHeaders: { request: { Referer: 'https://cee.buzz/' } } } },
       { name: 'duplicate', url: 'https://cdn.example/1080.mp4' },
       { name: 'bad scheme', url: 'javascript:alert(1)' }
@@ -21,6 +21,7 @@ async function main() {
   assert.deepStrictEqual(result.streams[0].behaviorHints, {
     proxyHeaders: { request: { Referer: 'https://cee.buzz/' } }
   });
+  assert.strictEqual(result.streams[0].quality, '1080p', 'normalized streams should retain source quality metadata');
   assert.deepStrictEqual(Object.keys(engine.getHealth().cee).sort(), [
     'attempts', 'circuitOpen', 'empty', 'errors', 'failures', 'lastStatus',
     'latencyEwmaMs', 'retryAt', 'successes', 'timeouts'
@@ -42,6 +43,22 @@ async function main() {
   assert.strictEqual(afterFailure.providers[0].status, 'circuit-open');
   assert.strictEqual(failing.getHealth().cee.errors, 1);
 
+
+  let aborted = false;
+  const timed = createProviderEngine({
+    providers: [{ id: 'slow-cee', name: 'CEE', getStreams: function (context) {
+      return new Promise(function (resolve, reject) {
+        context.signal.addEventListener('abort', function () {
+          aborted = true;
+          reject(new Error('aborted'));
+        });
+      });
+    } }],
+    providerTimeoutMs: 30
+  });
+  const timedResult = await timed.getStreams({});
+  assert.strictEqual(timedResult.providers[0].status, 'timeout', 'slow upstream requests must respect the provider deadline');
+  assert.strictEqual(aborted, true, 'provider timeout should abort the in-flight upstream request when supported');
   console.log('CEE provider engine tests passed');
 }
 
