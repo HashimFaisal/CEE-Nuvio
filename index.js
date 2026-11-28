@@ -303,7 +303,8 @@ function searchCee(meta, type) {
   const expectedKind = kind === 'movie' ? 1 : 2;
   const queries = [];
   const addQuery = function (value) {
-    if (value && queries.indexOf(value) === -1) queries.push(value);
+    const term = String(value || '').trim();
+    if (term && queries.indexOf(term) === -1) queries.push(term);
   };
 
   addQuery(titles[0]);
@@ -311,9 +312,34 @@ function searchCee(meta, type) {
   for (let i = 1; i < Math.min(titles.length, 3); i++) addQuery(titles[i]);
   if (queries.length > 4) queries.length = 4;
 
-  const unique = new Map();
+  const yearRange = meta.year
+    ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1)
+    : '1900,' + new Date().getFullYear();
 
-  function rankMatches() {
+  function searchOne(term) {
+    const encoded = encodeURIComponent(term);
+    const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
+      '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
+      '&page=0&type=' + apiType + '&itemsPerPage=12';
+    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
+      return api(path).then(listFrom);
+    }, 600000).catch(function (error) {
+      console.error('[CEE SEARCH]', term, error.message);
+      return [];
+    });
+  }
+
+  function rankMatches(items) {
+    const unique = new Map();
+    items.forEach(function (list) {
+      (Array.isArray(list) ? list : []).forEach(function (item) {
+        const id = item && (item.nb != null ? item.nb : item.id);
+        if (id != null && String(id) !== '' && !unique.has(String(id))) {
+          unique.set(String(id), item);
+        }
+      });
+    });
+
     const ranked = [];
     unique.forEach(function (item) {
       const itemKind = Number(item.kind);
@@ -359,47 +385,17 @@ function searchCee(meta, type) {
     return ranked[0];
   }
 
-  function searchAt(index) {
-    if (index >= queries.length) {
-      const best = rankMatches();
-      if (!best) {
-        console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
-        return null;
-      }
-      console.log('[CEE MATCH]', best.id, 'score:', best.score);
-      return best.id;
+  // Search title variants concurrently instead of waiting for each slow CEE
+  // response before issuing the next query. The cache still coalesces repeats.
+  return Promise.all(queries.map(searchOne)).then(function (results) {
+    const best = rankMatches(results);
+    if (!best) {
+      console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
+      return null;
     }
-
-    const term = queries[index];
-    const encoded = encodeURIComponent(term);
-    const yearRange = meta.year
-      ? String(Number(meta.year) - 1) + ',' + String(Number(meta.year) + 1)
-      : '1900,' + new Date().getFullYear();
-    const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
-      '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
-      '&page=0&type=' + apiType + '&itemsPerPage=12';
-
-    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
-      return api(path).then(listFrom);
-    }, 600000).catch(function (error) {
-      console.error('[CEE SEARCH]', term, error.message);
-      return [];
-    }).then(function (items) {
-      items.forEach(function (item) {
-        const id = item && (item.nb != null ? item.nb : item.id);
-        if (id != null && String(id) !== '') unique.set(String(id), item);
-      });
-
-      const currentBest = rankMatches();
-      if (currentBest && currentBest.exactExternal) {
-        console.log('[CEE MATCH]', currentBest.id, 'exact external ID');
-        return currentBest.id;
-      }
-      return searchAt(index + 1);
-    });
-  }
-
-  return Promise.resolve().then(function () { return searchAt(0); });
+    console.log('[CEE MATCH]', best.id, best.exactExternal ? 'exact external ID' : 'score: ' + best.score);
+    return best.id;
+  });
 }
 function numberOf(value) {
   const match = String(value == null ? '' : value).match(/\d+/);
@@ -509,10 +505,6 @@ function buildStreams(files, details, videoId, type, season, episode) {
     seen.add(url);
 
     const quality = qualityLabel(file.resolution || file.name || file.container);
-    // Experiment: exclude 4K/2160p sources to test whether high-bitrate
-    // variants are contributing to slow startup or playback buffering.
-    if (quality === '4K') return;
-
     const stream = {
       name: 'CEE · ' + quality,
       title: quality + ' • CEE',
