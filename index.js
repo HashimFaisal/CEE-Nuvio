@@ -191,6 +191,11 @@ function cached(key, loader, ttl) {
 function request(url, options) {
   const opts = options || {};
   const startedAt = Date.now();
+  const safeUrl = String(url).replace(/([?&]api_key=)[^&]*/gi, '$1[REDACTED]');
+  const requestLabel = (function () {
+    try { const parsed = new URL(url); return parsed.hostname + parsed.pathname; }
+    catch (_) { return 'unknown-endpoint'; }
+  })();
   const headers = Object.assign({
     Accept: 'application/json, text/plain, */*',
     'User-Agent': USER_AGENT,
@@ -206,18 +211,18 @@ function request(url, options) {
 
   return fetch(url, fetchOptions).then(function (response) {
     return response.text().then(function (body) {
-      console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', url);
+      console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
       if (!response.ok) {
-        throw new Error('HTTP ' + response.status + ' ' + url + ' :: ' + body.slice(0, 500));
+        throw new Error('HTTP ' + response.status + ' ' + safeUrl + ' :: ' + body.slice(0, 500));
       }
       try {
         return JSON.parse(body);
       } catch (error) {
-        throw new Error('Invalid JSON from ' + url + ' :: ' + body.slice(0, 250));
+        throw new Error('Invalid JSON from ' + safeUrl + ' :: ' + body.slice(0, 250));
       }
     });
   }).catch(function (error) {
-    console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', url);
+    console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
     throw error;
   });
 }
