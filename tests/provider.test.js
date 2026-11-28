@@ -170,6 +170,41 @@ async function main() {
     assert.ok(maxActiveSearches >= 2, 'CEE title variants should be queried concurrently');
     global.fetch = originalFetchForParallel;
 
+    const originalFetchForSuppliedMeta = global.fetch;
+    let metadataLookups = 0;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('api.themoviedb.org') || value.includes('/meta/')) {
+        metadataLookups++;
+        return response({ error: 'metadata lookup should have been skipped' }, false, 500);
+      }
+      if (value.includes('/AdvancedSearch')) {
+        return response([{
+          nb: 55, kind: 1, en_title: 'Fast Path Movie', year: '2024',
+          imdbUrlRef: 'tt5555555'
+        }]);
+      }
+      if (value.includes('/transcoddedFiles/id/55')) {
+        return response([{ videoUrl: 'https://cdn.example/fast-path.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const suppliedMetaStreams = await getStreams({
+      tmdbId: 555,
+      mediaType: 'movie',
+      meta: {
+        name: 'Fast Path Movie',
+        original_name: 'Fast Path Movie',
+        year: '2024',
+        imdb_id: 'tt5555555'
+      }
+    });
+    assert.strictEqual(suppliedMetaStreams.length, 1,
+      'Nuvio-supplied metadata should resolve CEE streams without an external metadata request');
+    assert.strictEqual(metadataLookups, 0,
+      'supplied metadata fast path must skip TMDB/Cinemeta lookup');
+    global.fetch = originalFetchForSuppliedMeta;
+
     console.log('CEE provider tests passed');
   } finally {
     global.fetch = originalFetch;
