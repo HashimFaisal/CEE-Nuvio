@@ -686,9 +686,9 @@ function fetchCeeStreams(type, id, season, episode) {
     const message = String(error && error.message || error);
     console.error('[CEE STREAM ERROR]', kind, id, message);
     if (/fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed/i.test(message)) {
-      return diagnoseNetwork().then(function () { return []; });
+      return diagnoseNetwork().then(function () { throw error; });
     }
-    return [];
+    throw error;
   });
 }
 
