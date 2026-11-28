@@ -278,8 +278,13 @@ function cached(key, loader, ttl) {
   return value;
 }
 
+function ensureBudget(deadline, stage) {
+  if (Number.isFinite(deadline) && Date.now() >= deadline) throw new Error('CEE time budget exceeded before ' + stage);
+}
+
 function request(url, options) {
   const opts = options || {};
+  ensureBudget(opts.deadline, 'HTTP request');
   const startedAt = Date.now();
   const safeUrl = String(url).replace(/([?&]api_key=)[^&]*/gi, '$1[REDACTED]');
   const requestLabel = (function () {
@@ -301,6 +306,7 @@ function request(url, options) {
 
   return fetch(url, fetchOptions).then(function (response) {
     return response.text().then(function (body) {
+      ensureBudget(opts.deadline, 'HTTP response body');
       console.log('[CEE HTTP]', response.status, Date.now() - startedAt, 'ms', requestLabel);
       if (!response.ok) {
         throw new Error('HTTP ' + response.status + ' ' + safeUrl + ' :: ' + body.slice(0, 500));
@@ -451,7 +457,7 @@ function parseInputId(value) {
   };
 }
 
-function resolveMal(malId, absoluteEpisode, signal) {
+function resolveMal(malId, absoluteEpisode, signal, deadline) {
   return cached('mal-meta-' + malId, function () {
     return request('https://graphql.anilist.co', {
       method: 'POST',
@@ -460,7 +466,8 @@ function resolveMal(malId, absoluteEpisode, signal) {
         query: 'query($idMal: Int){Media(idMal:$idMal,type:ANIME){startDate{year} title{romaji english native}}}',
         variables: { idMal: Number(malId) }
       }),
-      signal: signal
+      signal: signal,
+      deadline: deadline
     }).then(function (response) {
       const media = response && response.data && response.data.Media;
       if (!media) throw new Error('No AniList metadata for MAL ' + malId);
@@ -504,7 +511,7 @@ function metadataFromInput(input, parsed) {
   };
 }
 
-function resolveMetadata(parsed, type, suppliedMeta, signal) {
+function resolveMetadata(parsed, type, suppliedMeta, signal, deadline) {
   if (parsed.directNb) return Promise.resolve(parsed);
   if (suppliedMeta && suppliedMeta.titles && suppliedMeta.titles.length) {
     console.log('[CEE METADATA] using Nuvio-supplied metadata; skipping external metadata request');
@@ -516,14 +523,14 @@ function resolveMetadata(parsed, type, suppliedMeta, signal) {
       episode: parsed.episode != null ? parsed.episode : suppliedMeta.episode
     }));
   }
-  if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode, signal);
+  if (parsed.malId) return resolveMal(parsed.malId, parsed.absoluteEpisode, signal, deadline);
 
   const kind = mediaKind(type);
   if (parsed.imdbId) {
     return cached('imdb-meta-' + kind + '-' + parsed.imdbId, function () {
       const cinemetaType = kind === 'tv' ? 'series' : 'movie';
       return request('https://v3-cinemeta.strem.io/meta/' + cinemetaType + '/' +
-        encodeURIComponent(parsed.imdbId) + '.json', { signal: signal }).then(function (response) {
+        encodeURIComponent(parsed.imdbId) + '.json', { signal: signal, deadline: deadline }).then(function (response) {
         const meta = response && response.meta;
         if (!meta) throw new Error('No Cinemeta metadata for ' + parsed.imdbId);
         const titles = [];
@@ -552,7 +559,7 @@ function resolveMetadata(parsed, type, suppliedMeta, signal) {
   return cached('meta-' + kind + '-' + tmdbId, function () {
     const url = 'https://api.themoviedb.org/3/' + kind + '/' + encodeURIComponent(tmdbId) +
       '?api_key=' + encodeURIComponent(key) + '&append_to_response=external_ids,translations';
-    return request(url, { signal: signal }).then(function (details) {
+    return request(url, { signal: signal, deadline: deadline }).then(function (details) {
       const external = details.external_ids || {};
       const resolvedImdb = imdbFrom(details.imdb_id) || imdbFrom(external.imdb_id);
       const titles = [];
@@ -583,7 +590,7 @@ function getCandidateTitles(item) {
   ].filter(Boolean).map(String);
 }
 
-function searchCee(meta, type, signal) {
+function searchCee(meta, type, signal, deadline) {
   const titles = (meta.titles || []).filter(Boolean);
   if (!titles.length && meta.imdbId) titles.push(meta.imdbId);
   if (!titles.length && meta.malId) titles.push('mal:' + meta.malId);
@@ -614,7 +621,7 @@ function searchCee(meta, type, signal) {
       '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
       '&page=0&type=' + apiType + '&itemsPerPage=12';
     return cached('search-' + apiType + '-' + normalizeTitle(term) + '-' + yearRange, function () {
-      return api(path, { signal: signal }).then(listFrom);
+      return api(path, { signal: signal, deadline: deadline }).then(listFrom);
     }, 600000).catch(function (error) {
       console.error('[CEE SEARCH]', term, error.message);
       return [];
@@ -741,10 +748,10 @@ function numberOf(value) {
   return match ? Number(match[0]) : null;
 }
 
-function resolveEpisode(seriesId, season, episode, signal) {
+function resolveEpisode(seriesId, season, episode, signal, deadline) {
   if (season == null || episode == null) return Promise.resolve(null);
   return cached('episodes-' + seriesId, function () {
-    return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal }).then(listFrom);
+    return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal, deadline: deadline }).then(listFrom);
   }, 600000).then(function (episodes) {
     const matches = episodes.filter(function (item) {
       const itemSeason = numberOf(item && (item.season != null ? item.season : item.seasonNumber));
@@ -769,15 +776,15 @@ function getDetails(videoId) {
   }, 600000);
 }
 
-function getVideoFiles(videoId, signal) {
+function getVideoFiles(videoId, signal, deadline) {
   return cached('player-' + videoId, function () {
-    return api('transcoddedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom).then(function (files) {
+    return api('transcoddedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom).then(function (files) {
       if (files.length) return files;
       console.log('[CEE PLAYER] primary endpoint empty; trying alternate spelling');
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom);
     }).catch(function (firstError) {
       console.log('[CEE PLAYER] primary endpoint failed; trying alternate spelling:', firstError.message);
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal }).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom);
     });
   }, 30000);
 }
@@ -863,7 +870,7 @@ function buildStreams(files, details, videoId, type, season, episode) {
   return streams;
 }
 
-function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
+function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal, deadline) {
   const startedAt = Date.now();
   const kind = mediaKind(type);
   const parsed = parseInputId(id);
@@ -871,10 +878,11 @@ function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
   const targetEpisode = parsed.episode != null ? parsed.episode : (parsed.absoluteEpisode != null ? parsed.absoluteEpisode : episode);
   console.log('[CEE TIMING] start', kind, id);
 
-  return resolveMetadata(parsed, kind, suppliedMeta, signal).then(function (meta) {
+  ensureBudget(deadline, 'metadata resolution');
+  return resolveMetadata(parsed, kind, suppliedMeta, signal, deadline).then(function (meta) {
     console.log('[CEE TIMING] metadata', Date.now() - startedAt, 'ms');
     if (meta.directNb) return { meta: meta, baseId: meta.directNb };
-    return searchCee(meta, kind, signal).then(function (baseId) {
+    return searchCee(meta, kind, signal, deadline).then(function (baseId) {
       console.log('[CEE TIMING] search', Date.now() - startedAt, 'ms');
       return { meta: meta, baseId: baseId };
     });
@@ -884,12 +892,12 @@ function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
       return [];
     }
     const videoIdPromise = kind === 'tv'
-      ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode, signal)
+      ? resolveEpisode(resolved.baseId, targetSeason, targetEpisode, signal, deadline)
       : Promise.resolve(resolved.baseId);
     return videoIdPromise.then(function (videoId) {
       console.log('[CEE TIMING] episode', Date.now() - startedAt, 'ms');
       if (!videoId) return [];
-      return getVideoFiles(videoId, signal).then(function (files) {
+      return getVideoFiles(videoId, signal, deadline).then(function (files) {
         const streams = (!files || !files.length)
           ? []
           : buildStreams(files, null, videoId, kind, targetSeason, targetEpisode);
@@ -909,15 +917,20 @@ function fetchCeeStreams(type, id, season, episode, suppliedMeta, signal) {
 
 // CEE-specific adapter: the provider engine owns orchestration; this adapter
 // owns only the CEE lookup and stream extraction path.
-const ceeProvider = {
-  id: 'cee',
-  name: 'CEE',
-  priority: 100,
-  getStreams: function (context) {
-    return fetchCeeStreams(context.mediaType, context.id, context.season, context.episode,
-      context.suppliedMeta, context.signal);
-  }
-};
+function createCeeProvider(resolveStreams) {
+  if (typeof resolveStreams !== 'function') throw new TypeError('resolveStreams must be a function');
+  return {
+    id: 'cee',
+    name: 'CEE',
+    priority: 100,
+    skipTimeoutTimer: true,
+    getStreams: function (context) {
+      return resolveStreams(context.mediaType, context.id, context.season, context.episode,
+        context.suppliedMeta, context.signal, context.deadline);
+    }
+  };
+}
+const ceeProvider = createCeeProvider(fetchCeeStreams);
 const ceeEngine = createProviderEngine({
   providers: [ceeProvider],
   providerTimeoutMs: 25000,
