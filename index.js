@@ -38,7 +38,8 @@ function createProviderEngine(options) {
     const output = {
       name: String(stream.name || label),
       title: String(stream.title || quality + ' • ' + provider.name),
-      url: stream.url
+      url: stream.url,
+      quality: quality
     };
     if (stream.behaviorHints && typeof stream.behaviorHints === 'object') {
       output.behaviorHints = stream.behaviorHints;
@@ -523,7 +524,7 @@ function searchCee(meta, type, signal) {
     const path = 'AdvancedSearch?level=0&videoTitle=' + encoded +
       '&staffTitle=' + encoded + '&year=' + encodeURIComponent(yearRange) +
       '&page=0&type=' + apiType + '&itemsPerPage=12';
-    return cached('search-' + apiType + '-' + normalizeTitle(term), function () {
+    return cached('search-' + apiType + '-' + normalizeTitle(term) + '-' + yearRange, function () {
       return api(path, { signal: signal }).then(listFrom);
     }, 600000).catch(function (error) {
       console.error('[CEE SEARCH]', term, error.message);
@@ -747,6 +748,7 @@ function buildStreams(files, details, videoId, type, season, episode) {
       name: 'CEE · ' + quality,
       title: quality + ' • CEE',
       url: url,
+      quality: quality,
       _rank: qualityRank(quality)
     };
     const proxyHeaders = playbackProxyHeaders(file);
