@@ -91,8 +91,8 @@ async function main() {
     assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 4K', 'CEE · 1080p', 'CEE · 720p']);
     assert.strictEqual(movie.length, 3, 'duplicate stream URLs must be removed while retaining available 4K sources');
     assert.strictEqual(detailsRequests, 0, 'playback resolution must not wait for unused allVideoInfo metadata');
-    assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
-      'CEE stream objects must match the Cinemana name/title/url schema');
+    assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'quality', 'title', 'url'],
+      'CEE stream objects should expose CinemaBox-compatible quality metadata');
 
     const originalFetchForHeaders = global.fetch;
     global.fetch = async function (url) {
@@ -142,19 +142,15 @@ async function main() {
     });
     assert.strictEqual(ambiguous.length, 0, 'ambiguous episode matches must be rejected');
 
-    const originalFetchForParallel = global.fetch;
-    let activeSearches = 0;
-    let maxActiveSearches = 0;
+    const originalFetchForEarlyStop = global.fetch;
+    let searchRequests = 0;
     global.fetch = async function (url) {
       const value = String(url);
       if (value.includes('/meta/movie/tt4444444')) {
         return response({ meta: { name: 'Concurrent Test', original_name: 'Concurrent Alias', year: '2023' } });
       }
       if (value.includes('/AdvancedSearch')) {
-        activeSearches++;
-        maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        activeSearches--;
+        searchRequests++;
         return response([{
           nb: 44, kind: 1, en_title: 'Concurrent Test', year: '2023',
           imdbUrlRef: 'tt4444444'
@@ -165,10 +161,36 @@ async function main() {
       }
       return response({ error: 'not found' }, false, 404);
     };
-    const parallelResult = await getStreams({ tmdbId: 'tt4444444', mediaType: 'movie' });
-    assert.strictEqual(parallelResult.length, 1, 'parallel title search should still resolve the correct stream');
-    assert.ok(maxActiveSearches >= 2, 'CEE title variants should be queried concurrently');
-    global.fetch = originalFetchForParallel;
+    const earlyStopResult = await getStreams({ tmdbId: 'tt4444444', mediaType: 'movie' });
+    assert.strictEqual(earlyStopResult.length, 1, 'primary exact match should return the stream');
+    assert.strictEqual(searchRequests, 1,
+      'a strong first-page match must stop title-variant requests instead of waiting for aliases');
+    global.fetch = originalFetchForEarlyStop;
+
+    const originalFetchForFallback = global.fetch;
+    let fallbackSearchRequests = 0;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt4444445')) {
+        return response({ meta: { name: 'Fallback Test', original_name: 'Fallback Alias', year: '2025' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        fallbackSearchRequests++;
+        if (value.includes('Fallback%20Test%202025')) {
+          return response([{ nb: 45, kind: 1, en_title: 'Fallback Test', year: '2025', imdbUrlRef: 'tt4444445' }]);
+        }
+        return response([]);
+      }
+      if (value.includes('/transcoddedFiles/id/45')) {
+        return response([{ videoUrl: 'https://cdn.example/fallback.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const fallbackResult = await getStreams({ tmdbId: 'tt4444445', mediaType: 'movie' });
+    assert.strictEqual(fallbackResult.length, 1, 'year-qualified fallback should resolve when the primary title search is empty');
+    assert.strictEqual(fallbackSearchRequests, 2,
+      'fallback search should run only after the primary title query fails to find a strong match');
+    global.fetch = originalFetchForFallback;
 
     const originalFetchForSuppliedMeta = global.fetch;
     let metadataLookups = 0;
