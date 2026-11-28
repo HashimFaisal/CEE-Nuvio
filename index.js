@@ -602,37 +602,46 @@ function searchCee(meta, type, signal) {
     return !!match && (match.exactExternal || (match.exactTitle && match.yearCompatible));
   }
 
-  let best = null;
-  let queryIndex = 0;
-
-  function runNext() {
-    if (queryIndex >= queries.length) return Promise.resolve(best && best.id || null);
-    const term = queries[queryIndex++];
-    const queryStarted = Date.now();
-    return searchOne(term).then(function (items) {
-      const match = rankMatches([items]);
-      if (match && (!best || match.score > best.score)) best = match;
-      console.log('[CEE SEARCH TRACE] query', queryIndex, 'elapsedMs:', Date.now() - queryStarted,
-        'results:', items.length, 'best:', match ? match.id : 'none',
-        'score:', match ? match.score : 'n/a');
-      if (isStrong(match)) {
-        console.log('[CEE SEARCH STOP] strong first-page match', match.id,
-          match.exactExternal ? 'external-id' : 'exact-title');
-        return match.id;
-      }
-      return runNext();
-    });
-  }
-
-  console.log('[CEE SEARCH] ordered queries:', queries.length, 'primary:', queries[0]);
-  return runNext().then(function (id) {
-    if (id) {
-      console.log('[CEE MATCH]', id, 'confident');
-      return id;
+  console.log('[CEE SEARCH] primary-first, parallel fallbacks:', queries.length,
+    'primary:', queries[0]);
+  const primaryStarted = Date.now();
+  return searchOne(queries[0]).then(function (primaryItems) {
+    const primaryMatch = rankMatches([primaryItems]);
+    console.log('[CEE SEARCH TRACE] primary elapsedMs:', Date.now() - primaryStarted,
+      'results:', primaryItems.length, 'best:', primaryMatch ? primaryMatch.id : 'none',
+      'score:', primaryMatch ? primaryMatch.score : 'n/a');
+    if (isStrong(primaryMatch)) {
+      console.log('[CEE SEARCH STOP] strong primary first-page match', primaryMatch.id,
+        primaryMatch.exactExternal ? 'external-id' : 'exact-title');
+      return primaryMatch.id;
     }
-    if (best) {
-      console.log('[CEE MATCH]', best.id, 'best fallback score:', best.score);
-      return best.id;
+
+    if (queries.length === 1) return primaryMatch ? primaryMatch.id : null;
+    const fallbackQueries = queries.slice(1);
+    const fallbackStarted = Date.now();
+    return Promise.all(fallbackQueries.map(function (term) {
+      return searchOne(term).then(function (items) {
+        const match = rankMatches([items]);
+        console.log('[CEE SEARCH TRACE] fallback', term, 'elapsedMs:', Date.now() - fallbackStarted,
+          'results:', items.length, 'best:', match ? match.id : 'none',
+          'score:', match ? match.score : 'n/a');
+        return { items: items, match: match };
+      });
+    })).then(function (fallbackResults) {
+      const allLists = [primaryItems].concat(fallbackResults.map(function (result) {
+        return result.items;
+      }));
+      const bestMatch = rankMatches(allLists);
+      const strongFallback = fallbackResults.map(function (result) { return result.match; })
+        .filter(isStrong).sort(function (a, b) { return b.score - a.score; })[0];
+      console.log('[CEE SEARCH TRACE] parallel fallbacks completed in',
+        Date.now() - fallbackStarted, 'ms; count:', fallbackQueries.length);
+      return strongFallback ? strongFallback.id : (bestMatch ? bestMatch.id : null);
+    });
+  }).then(function (id) {
+    if (id) {
+      console.log('[CEE MATCH]', id, 'resolved');
+      return id;
     }
     console.log('[CEE SEARCH] no confident match', titles.join(' / '), meta.year || '');
     return null;
