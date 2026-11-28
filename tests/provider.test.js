@@ -350,6 +350,41 @@ async function main() {
     assert.strictEqual(pageTwoRequested, true, 'second-page search should only be attempted after a full inconclusive first page');
     global.fetch = originalFetchForPageTwo;
 
+
+    // Nuvio embedded-runtime regression: successful playback requests must not
+    // schedule per-request timeout handles. CinemaBox avoids these timers because
+    // cleared handles can keep a completed scraper invocation alive.
+    const originalFetchForTimerRegression = global.fetch;
+    const originalSetTimeout = global.setTimeout;
+    let scheduledTimers = 0;
+    global.setTimeout = function () {
+      scheduledTimers++;
+      return originalSetTimeout.apply(this, arguments);
+    };
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/AdvancedSearch')) {
+        return response([{ nb: 88, kind: 1, en_title: 'Timer-Free Request', year: '2024', imdbUrlRef: 'tt8888888' }]);
+      }
+      if (value.includes('/transcoddedFiles/id/88')) {
+        return response([{ videoUrl: 'https://cdn.example/timer-free.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    try {
+      const timerFreeStreams = await getStreams({
+        tmdbId: 'tt8888888',
+        mediaType: 'movie',
+        meta: { name: 'Timer-Free Request', original_name: 'Timer-Free Request', year: '2024', imdb_id: 'tt8888888' }
+      });
+      assert.strictEqual(timerFreeStreams.length, 1, 'timer-free request path should still return streams');
+      assert.strictEqual(scheduledTimers, 0,
+        'successful CEE HTTP requests must not schedule per-request timeout timers');
+    } finally {
+      global.fetch = originalFetchForTimerRegression;
+      global.setTimeout = originalSetTimeout;
+    }
+
     console.log('CEE provider tests passed');
   } finally {
     global.fetch = originalFetch;
