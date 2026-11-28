@@ -8,8 +8,10 @@ function createCeeProvider(resolveStreams) {
     id: 'cee',
     name: 'CEE',
     priority: 100,
+    skipTimeoutTimer: true,
     getStreams: function (context) {
-      return resolveStreams(context.mediaType, context.id, context.season, context.episode, context);
+      return resolveStreams(context.mediaType, context.id, context.season, context.episode,
+        context.suppliedMeta, context.signal, context.deadline);
     }
   };
 }

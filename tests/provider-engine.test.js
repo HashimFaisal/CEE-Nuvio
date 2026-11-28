@@ -23,8 +23,9 @@ async function main() {
   });
   assert.strictEqual(result.streams[0].quality, '1080p', 'normalized streams should retain source quality metadata');
   assert.deepStrictEqual(Object.keys(engine.getHealth().cee).sort(), [
-    'attempts', 'circuitOpen', 'empty', 'errors', 'failures', 'lastStatus',
-    'latencyEwmaMs', 'retryAt', 'successes', 'timeouts'
+    'attempts', 'circuitOpen', 'cooldownMs', 'emptyResponses', 'errorCount', 'failures',
+    'lastStatus', 'latencyEwmaMs', 'productiveRate', 'rejectedStreams', 'retryAt',
+    'successRate', 'successes', 'timeoutCount', 'validStreams'
   ]);
   assert.strictEqual(engine.getHealth().cee.successes, 1);
 
@@ -41,7 +42,7 @@ async function main() {
   const afterFailure = await failing.getStreams({});
   assert.strictEqual(calls, 1, 'open circuit must prevent repeated failing upstream requests');
   assert.strictEqual(afterFailure.providers[0].status, 'circuit-open');
-  assert.strictEqual(failing.getHealth().cee.errors, 1);
+  assert.strictEqual(failing.getHealth().cee.errorCount, 1);
 
 
   let aborted = false;
