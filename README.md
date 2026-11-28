@@ -5,7 +5,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 ## Provider details
 
 - Provider ID: `cee`
-- Version: `3.1.0`
+- Version: `3.1.1`
 - Author: `HashimFaisal`
 - Supported media: movies and TV series
 - CEE API: `https://cee.buzz/api/android`
@@ -16,7 +16,7 @@ An independently implemented Nuvio provider for **CEE (🇮🇶)**.
 The provider now uses a CinemaBox2-style provider architecture (adapter contract, bounded execution, stream validation, adaptive health/circuit breaker, deterministic quality ordering) while keeping CEE as its only upstream source:
 
 - Bounded in-memory LRU caching with in-flight request coalescing for metadata, title searches, episode lists, and player responses.
-- CinemaBox-style ordered title search: primary title first, stop immediately on a confident match, then run year-qualified and alternate-title fallbacks concurrently; inspect page 2 only when page 1 is full and inconclusive.
+- CinemaBox-style ordered title search: primary title first, stop immediately on a confident match, then run year-qualified and alternate-title fallbacks concurrently; return immediately on an exact external-ID fallback instead of waiting for slower aliases; inspect page 2 only when page 1 is full and inconclusive.
 - A bounded provider deadline, per-request fetch timeout with AbortController cancellation, one bounded retry for transient GET/network failures, and exponential circuit-breaker cooldowns.
 - Arabic-aware title normalization and confidence-based matching.
 - IMDb metadata through Cinemeta; TMDB numeric IDs use the Nuvio runtime's `TMDB_API_KEY`.
@@ -48,6 +48,6 @@ Run with Node.js:
 node tests/provider.test.js
 ```
 
-The offline tests cover movie and episode resolution, quality ordering, duplicate URL removal, explicit playback-header forwarding, primary-query early stop, ordered fallback search, metadata fast paths, and rejection of ambiguous episode matches.
+The offline tests cover movie and episode resolution, quality ordering, duplicate URL removal, explicit playback-header forwarding, primary-query early stop, ordered fallback search, metadata fast paths, and rejection of ambiguous episode matches, plus early return on exact external-ID fallbacks.
 
 Live source availability, platform compatibility, and playback still require verification inside Nuvio on the target network. Header forwarding is conditional on CEE returning those explicit fields; it does not prove that CEE requires them or that it will increase throughput.

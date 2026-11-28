@@ -794,17 +794,36 @@ function searchCee(meta, type, signal, deadline) {
         return { items: items, match: rankMatches([items]) };
       }));
     }
-    return Promise.all(fallbackTasks).then(function (fallbackResults) {
-      const allLists = [primaryItems].concat(fallbackResults.map(function (result) {
-        return result.items;
-      }));
-      const bestMatch = rankMatches(allLists);
-      const strongFallback = fallbackResults.map(function (result) { return result.match; })
-        .filter(isStrong).sort(function (a, b) { return b.score - a.score; })[0];
-      console.log('[CEE SEARCH TRACE] parallel fallbacks completed in',
-        Date.now() - fallbackStarted, 'ms; count:', fallbackTasks.length);
-      return strongFallback ? strongFallback.id : (bestMatch ? bestMatch.id : null);
+    // An exact IMDb/MAL hit is unambiguous. Do not hold the playback path
+    // open for slower title aliases once one fallback has proved that identity.
+    // Other fallbacks may finish in the background; fuzzy/title-only matches
+    // still wait for all candidates so ambiguity handling remains unchanged.
+    const exactExternalFallback = new Promise(function (resolve) {
+      fallbackTasks.forEach(function (task) {
+        task.then(function (result) {
+          if (result.match && result.match.exactExternal) resolve(result.match);
+        });
+      });
     });
+    return Promise.race([
+      Promise.all(fallbackTasks).then(function (fallbackResults) {
+        const allLists = [primaryItems].concat(fallbackResults.map(function (result) {
+          return result.items;
+        }));
+        const bestMatch = rankMatches(allLists);
+        const strongFallback = fallbackResults.map(function (result) { return result.match; })
+          .filter(isStrong).sort(function (a, b) { return b.score - a.score; })[0];
+        console.log('[CEE SEARCH TRACE] parallel fallbacks completed in',
+          Date.now() - fallbackStarted, 'ms; count:', fallbackTasks.length);
+        return { id: strongFallback ? strongFallback.id : (bestMatch ? bestMatch.id : null),
+          earlyExternal: false };
+      }),
+      exactExternalFallback.then(function (match) {
+        console.log('[CEE SEARCH STOP] exact external ID fallback', match.id,
+          'elapsedMs:', Date.now() - fallbackStarted);
+        return { id: match.id, earlyExternal: true };
+      })
+    ]).then(function (result) { return result.id; });
   }).then(function (id) {
     if (id) {
       console.log('[CEE MATCH]', id, 'resolved');
@@ -841,7 +860,13 @@ function episodeCoordinates(item) {
 function resolveEpisode(seriesId, season, episode, signal, deadline) {
   if (season == null || episode == null) return Promise.resolve(null);
   return cached('episodes-' + seriesId, function () {
-    return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal, deadline: deadline }).then(listFrom);
+    const episodeStarted = Date.now();
+    return api('videoSeason/id/' + encodeURIComponent(seriesId), { signal: signal, deadline: deadline }).then(function (response) {
+      const episodes = listFrom(response);
+      console.log('[CEE TIMING] episode-list', Date.now() - episodeStarted, 'ms',
+        'items:', episodes.length);
+      return episodes;
+    });
   }, 600000).then(function (episodes) {
     const matches = episodes.filter(function (item) {
       const coordinates = episodeCoordinates(item);
@@ -865,13 +890,27 @@ function getDetails(videoId) {
 
 function getVideoFiles(videoId, signal, deadline) {
   return cached('player-' + videoId, function () {
-    return api('transcoddedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom).then(function (files) {
+    const playerStarted = Date.now();
+    return api('transcoddedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(function (response) {
+      const files = listFrom(response);
+      console.log('[CEE TIMING] player-response', Date.now() - playerStarted, 'ms',
+        'files:', files.length);
       if (files.length) return files;
       console.log('[CEE PLAYER] primary endpoint empty; trying alternate spelling');
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(function (fallbackResponse) {
+        const fallbackFiles = listFrom(fallbackResponse);
+        console.log('[CEE TIMING] player-fallback', Date.now() - playerStarted, 'ms',
+          'files:', fallbackFiles.length);
+        return fallbackFiles;
+      });
     }).catch(function (firstError) {
       console.log('[CEE PLAYER] primary endpoint failed; trying alternate spelling:', firstError.message);
-      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(listFrom);
+      return api('transcodedFiles/id/' + encodeURIComponent(videoId), { signal: signal, deadline: deadline }).then(function (fallbackResponse) {
+        const fallbackFiles = listFrom(fallbackResponse);
+        console.log('[CEE TIMING] player-fallback', Date.now() - playerStarted, 'ms',
+          'files:', fallbackFiles.length);
+        return fallbackFiles;
+      });
     });
   }, 30000);
 }
