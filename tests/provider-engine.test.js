@@ -7,8 +7,8 @@ const { createCeeProvider } = require('../providers/cee');
 async function main() {
   const provider = createCeeProvider(async function () {
     return [
-      { name: 'CEE · 720p', title: '720p • CEE', url: 'https://cdn.example/720.mp4' },
-      { name: 'CEE · 1080p', title: '1080p • CEE', url: 'https://cdn.example/1080.mp4',
+      { name: 'CEE · 720p', title: '720p • CEE', url: 'https://cdn.example/720.mp4', quality: '720p' },
+      { name: 'CEE · 1080p', title: '1080p • CEE', url: 'https://cdn.example/1080.mp4', quality: '1080p',
         behaviorHints: { proxyHeaders: { request: { Referer: 'https://cee.buzz/' } } } },
       { name: 'duplicate', url: 'https://cdn.example/1080.mp4' },
       { name: 'bad scheme', url: 'javascript:alert(1)' }
