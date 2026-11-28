@@ -2,127 +2,201 @@
 
 const QUALITY = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '576p': 576, '480p': 480, '360p': 360, '240p': 240 };
 
+function normalizeQuality(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return 'Video';
+  let match = raw.match(/^(?:4\\s*k|uhd)(?:\\s+(.+))?$/i);
+  if (match) return '2160p' + (match[1] ? ' ' + match[1].trim() : '');
+  match = raw.match(/^(\\d{3,4})\\s*p(?:\\s+(.+))?$/i);
+  return match ? match[1] + 'p' + (match[2] ? ' ' + match[2].trim() : '') : raw;
+}
+
 function qualityRank(value) {
-  const raw = String(value || '');
-  if (/4\s*k/i.test(raw)) return 2160;
-  const match = raw.match(/(2160|1440|1080|720|576|480|360|240)/);
-  return match ? Number(match[1]) : 0;
-  return match ? Number(match[1]) : 0;
+  const match = normalizeQuality(value).match(/^(\\d{3,4})p/i);
+  return match ? Number(match[1]) : (QUALITY[String(value).toLowerCase()] || -1);
 }
 
 function validStreamUrl(value) {
-  if (typeof value !== 'string' || !value || value !== value.trim() || /[\s\\]/.test(value)) return false;
+  if (typeof value !== 'string' || !value || value !== value.trim() || /\\s|\\\\/.test(value)) return false;
+  const protocolEnd = value.indexOf('://');
+  if (protocolEnd < 0) return false;
+  const protocol = value.slice(0, protocolEnd).toLowerCase();
+  if (protocol !== 'http' && protocol !== 'https') return false;
+  const authority = value.slice(protocolEnd + 3).split(/[/?#]/, 1)[0];
+  if (!authority) return false;
   try {
     const parsed = new URL(value);
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-      !!parsed.hostname && !parsed.username && !parsed.password;
+      Boolean(parsed.hostname) && !parsed.username && !parsed.password;
   } catch (_) { return false; }
+}
+
+function streamRejectionReason(stream) {
+  if (!stream || typeof stream !== 'object') return 'invalid-item';
+  if (typeof stream.url !== 'string' || !stream.url) return 'missing-url';
+  if (!validStreamUrl(stream.url)) return 'invalid-url';
+  return null;
 }
 
 function normalizeStream(stream, provider) {
   if (!stream || !validStreamUrl(stream.url)) return null;
-  const quality = String(stream.quality || stream.resolution || 'Video');
-  const label = provider.name + ' · ' + quality;
+  const quality = normalizeQuality(stream.quality || stream.resolution);
+  const label = String(provider.name || provider.id) + ' ' + quality;
   const output = {
     name: String(stream.name || label),
-    title: String(stream.title || quality + ' • ' + provider.name),
+    title: String(stream.title || label),
     url: stream.url,
     quality: quality
   };
-  if (stream.behaviorHints && typeof stream.behaviorHints === 'object') {
-    output.behaviorHints = stream.behaviorHints;
-  }
+  if (stream.behaviorHints && typeof stream.behaviorHints === 'object') output.behaviorHints = stream.behaviorHints;
+  if (stream.language) output.language = String(stream.language);
+  if (Array.isArray(stream.subtitles) && stream.subtitles.length) output.subtitles = stream.subtitles.slice();
+  if (Number.isFinite(Number(stream.sizeBytes)) && Number(stream.sizeBytes) > 0) output.sizeBytes = Number(stream.sizeBytes);
+  if (Number.isFinite(Number(stream.seeders)) && Number(stream.seeders) >= 0) output.seeders = Number(stream.seeders);
   return output;
 }
 
 function createProviderEngine(options) {
   const config = options || {};
-  const providers = (config.providers || []).slice();
-  const timeoutMs = Math.max(500, Number(config.providerTimeoutMs) || 25000);
-  const failureThreshold = Math.max(1, Number(config.failureThreshold) || 2);
-  const cooldownMs = Math.max(1000, Number(config.cooldownMs) || 30000);
+  const providers = Array.isArray(config.providers) ? config.providers.slice() : [];
+  const concurrency = Math.max(1, Math.floor(config.maxConcurrency || 3));
+  const defaultTimeoutMs = Math.max(100, Number(config.providerTimeoutMs) || 25000);
+  const failureThreshold = Math.max(1, Math.floor(config.failureThreshold || 2));
+  const cooldownMs = Math.max(100, Number(config.cooldownMs) || 30000);
+  const maxCooldownMs = Math.max(cooldownMs, Number(config.maxCooldownMs) || 300000);
   const now = config.now || Date.now;
+  const schedule = config.setTimeout || (typeof setTimeout === 'function' ? setTimeout : function () { return null; });
+  const cancel = config.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : function () {});
   const health = new Map();
 
   providers.forEach(provider => {
-    if (!provider || !provider.id || typeof provider.getStreams !== 'function') {
-      throw new TypeError('Invalid provider adapter');
-    }
-    health.set(provider.id, {
-      attempts: 0, successes: 0, empty: 0, errors: 0, timeouts: 0,
-      failures: 0, openUntil: 0, latencyEwmaMs: null, lastStatus: 'never'
+    if (!provider || !/^[a-z0-9][a-z0-9._-]*$/i.test(String(provider.id || '')) ||
+        typeof provider.getStreams !== 'function') throw new TypeError('Invalid provider contract');
+    if (!health.has(provider.id)) health.set(provider.id, {
+      failures: 0, openUntil: 0, attempts: 0, successes: 0, validStreams: 0,
+      emptyResponses: 0, errorCount: 0, timeoutCount: 0, rejectedStreams: 0,
+      latencyEwmaMs: null, lastStatus: 'never', lastCooldownMs: 0
     });
   });
 
-  async function runProvider(provider, context) {
+  async function runOne(provider, context) {
     const state = health.get(provider.id);
-    if (state.openUntil > now()) {
-      return { providerId: provider.id, status: 'circuit-open', streams: [] };
+    if (provider.enabled === false) return { providerId: provider.id, status: 'disabled', streams: [] };
+    if (typeof provider.supports === 'function' && !provider.supports(context)) {
+      return { providerId: provider.id, status: 'unsupported', streams: [] };
     }
-    const started = now();
-    state.attempts++;
+    if (state.openUntil > now()) return { providerId: provider.id, status: 'circuit-open', streams: [] };
+    const providerTimeoutMs = Math.max(100, Number(provider.timeoutMs) || defaultTimeoutMs);
+    const inheritedDeadline = Number.isFinite(context.deadline) ? context.deadline : Infinity;
+    const deadline = Math.min(inheritedDeadline, now() + providerTimeoutMs);
+    if (deadline <= now()) return { providerId: provider.id, status: 'deadline-exceeded', streams: [] };
+
+    const startedAt = now();
+    state.attempts += 1;
     let timer;
     let timedOut = false;
     try {
       const controller = typeof AbortController === 'function' ? new AbortController() : null;
       const providerContext = Object.assign({}, context, {
-        providerId: provider.id,
-        signal: controller ? controller.signal : undefined,
-        deadline: started + timeoutMs
+        providerId: provider.id, deadline: deadline,
+        signal: controller ? controller.signal : undefined
       });
       const work = Promise.resolve().then(() => provider.getStreams(providerContext));
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          if (controller) controller.abort();
-          reject(new Error('PROVIDER_TIMEOUT'));
-        }, timeoutMs);
-      });
-      const raw = await Promise.race([work, timeout]);
-      clearTimeout(timer);
-      const elapsedMs = Math.max(0, now() - started);
-      const items = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.streams) ? raw.streams : []);
-      const seen = new Set();
-      const streams = [];
-      items.forEach(item => {
-        const normalized = normalizeStream(item, provider);
-        if (!normalized || seen.has(normalized.url)) return;
-        seen.add(normalized.url);
-        streams.push(normalized);
-      });
+      let result;
+      if (provider.skipTimeoutTimer === true) {
+        result = await work;
+      } else {
+        const timeout = new Promise((_, reject) => {
+          timer = schedule(() => {
+            timedOut = true;
+            if (controller) controller.abort();
+            reject(new Error('PROVIDER_TIMEOUT'));
+          }, Math.max(1, deadline - now()));
+        });
+        result = await Promise.race([work, timeout]);
+        cancel(timer);
+      }
+
+      const elapsedMs = Math.max(0, now() - startedAt);
       state.failures = 0;
-      state.successes += streams.length ? 1 : 0;
-      state.empty += streams.length ? 0 : 1;
+      state.openUntil = 0;
+      state.latencyEwmaMs = state.latencyEwmaMs == null ? elapsedMs : state.latencyEwmaMs * 0.7 + elapsedMs * 0.3;
+      const raw = Array.isArray(result) ? result : (result && Array.isArray(result.streams) ? result.streams : []);
+      const streams = [];
+      const rejectionReasons = {};
+      const seen = new Set();
+      raw.forEach(item => {
+        const normalized = normalizeStream(item, provider);
+        if (normalized && !seen.has(normalized.url)) {
+          seen.add(normalized.url);
+          streams.push(normalized);
+        } else if (!normalized) {
+          const reason = streamRejectionReason(item) || 'invalid-stream';
+          rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
+        }
+      });
+      const rejectedStreams = raw.length - streams.length;
+      state.rejectedStreams += rejectedStreams;
+      if (streams.length) state.successes += 1;
+      else state.emptyResponses += 1;
       state.lastStatus = streams.length ? 'ok' : 'empty';
-      state.latencyEwmaMs = state.latencyEwmaMs == null
-        ? elapsedMs : state.latencyEwmaMs * 0.7 + elapsedMs * 0.3;
-      streams.sort((a, b) => qualityRank(b.name) - qualityRank(a.name));
-      return { providerId: provider.id, status: state.lastStatus, elapsedMs, streams };
+      state.validStreams += streams.length;
+      streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+      return { providerId: provider.id, status: state.lastStatus, elapsedMs, rawStreams: raw.length,
+        rejectedStreams, rejectionReasons, streams };
     } catch (error) {
-      if (timer) clearTimeout(timer);
-      const elapsedMs = Math.max(0, now() - started);
-      state.failures++;
-      state.errors++;
-      if (timedOut) state.timeouts++;
+      if (timer !== undefined) cancel(timer);
+      const elapsedMs = Math.max(0, now() - startedAt);
+      state.failures += 1;
+      state.errorCount += 1;
+      if (timedOut) state.timeoutCount += 1;
       state.lastStatus = timedOut ? 'timeout' : 'error';
-      state.latencyEwmaMs = state.latencyEwmaMs == null
-        ? elapsedMs : state.latencyEwmaMs * 0.7 + elapsedMs * 0.3;
-      if (state.failures >= failureThreshold) state.openUntil = now() + cooldownMs;
+      state.latencyEwmaMs = state.latencyEwmaMs == null ? elapsedMs : state.latencyEwmaMs * 0.7 + elapsedMs * 0.3;
+      if (state.failures >= failureThreshold) {
+        const exponent = Math.min(10, state.failures - failureThreshold);
+        state.lastCooldownMs = Math.min(maxCooldownMs, cooldownMs * Math.pow(2, exponent));
+        state.openUntil = now() + state.lastCooldownMs;
+      }
       console.error('[CEE ENGINE]', provider.id, state.lastStatus, error && error.message || error);
       return { providerId: provider.id, status: state.lastStatus, elapsedMs, streams: [] };
     }
   }
 
   async function getStreams(context) {
-    const results = await Promise.all(providers.map(provider => runProvider(provider, context || {})));
+    const input = context || {};
+    const results = new Array(providers.length);
+    const primaryIndexes = [];
+    const fallbackIndexes = [];
+    providers.forEach((provider, index) => {
+      (provider.fallbackOnlyWhenEmpty === true ? fallbackIndexes : primaryIndexes).push(index);
+    });
+    async function runIndexes(indexes) {
+      let cursor = 0;
+      async function worker() {
+        while (true) {
+          const position = cursor++;
+          if (position >= indexes.length) return;
+          const index = indexes[position];
+          results[index] = await runOne(providers[index], input);
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, indexes.length) }, () => worker()));
+    }
+    await runIndexes(primaryIndexes);
+    const primaryHasStreams = primaryIndexes.some(index => results[index] && results[index].streams.length > 0);
+    if (!primaryHasStreams && fallbackIndexes.length) await runIndexes(fallbackIndexes);
+    fallbackIndexes.forEach(index => {
+      if (!results[index]) results[index] = { providerId: providers[index].id, status: 'skipped-primary-success', streams: [] };
+    });
+
     const seen = new Set();
     const streams = [];
-    results.forEach(result => result.streams.forEach(stream => {
+    results.forEach(result => (result && result.streams || []).forEach(stream => {
       if (seen.has(stream.url)) return;
       seen.add(stream.url);
       streams.push(stream);
     }));
-    streams.sort((a, b) => qualityRank(b.name) - qualityRank(a.name));
+    streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
     return { streams, providers: results };
   }
 
@@ -130,16 +204,20 @@ function createProviderEngine(options) {
     const snapshot = {};
     health.forEach((state, id) => {
       snapshot[id] = {
-        attempts: state.attempts, successes: state.successes, empty: state.empty,
-        errors: state.errors, timeouts: state.timeouts, failures: state.failures,
-        circuitOpen: state.openUntil > now(), retryAt: state.openUntil > now() ? state.openUntil : null,
-        latencyEwmaMs: state.latencyEwmaMs, lastStatus: state.lastStatus
+        failures: state.failures, circuitOpen: state.openUntil > now(),
+        retryAt: state.openUntil > now() ? state.openUntil : null,
+        cooldownMs: state.lastCooldownMs, attempts: state.attempts, successes: state.successes,
+        successRate: state.attempts ? state.successes / state.attempts : null,
+        productiveRate: state.attempts ? state.successes / state.attempts : null,
+        emptyResponses: state.emptyResponses, errorCount: state.errorCount,
+        timeoutCount: state.timeoutCount, rejectedStreams: state.rejectedStreams,
+        validStreams: state.validStreams, latencyEwmaMs: state.latencyEwmaMs,
+        lastStatus: state.lastStatus
       };
     });
     return snapshot;
   }
-
   return { getStreams, getHealth };
 }
 
-module.exports = { createProviderEngine, qualityRank, validStreamUrl };
+module.exports = { createProviderEngine, normalizeStream, normalizeQuality, qualityRank, validStreamUrl, streamRejectionReason };
