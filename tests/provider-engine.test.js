@@ -23,8 +23,9 @@ async function main() {
   });
   assert.strictEqual(result.streams[0].quality, '1080p', 'normalized streams should retain source quality metadata');
   assert.deepStrictEqual(Object.keys(engine.getHealth().cee).sort(), [
-    'attempts', 'circuitOpen', 'empty', 'errors', 'failures', 'lastStatus',
-    'latencyEwmaMs', 'retryAt', 'successes', 'timeouts'
+    'attempts', 'circuitOpen', 'cooldownMs', 'emptyResponses', 'errorCount', 'failures',
+    'lastStatus', 'latencyEwmaMs', 'productiveRate', 'rejectedStreams', 'retryAt',
+    'successRate', 'successes', 'timeoutCount', 'validStreams'
   ]);
   assert.strictEqual(engine.getHealth().cee.successes, 1);
 
