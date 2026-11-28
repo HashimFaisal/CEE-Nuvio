@@ -337,6 +337,13 @@ function request(url, options) {
     let timedOut = false;
     const timeoutMs = Math.max(1, Math.min(Number(opts.timeoutMs) || 10000,
       Number.isFinite(opts.deadline) ? opts.deadline - Date.now() : 10000));
+    function cleanup() {
+      if (timer !== undefined) clearTimeout(timer);
+      if (parentAbort && opts.signal && typeof opts.signal.removeEventListener === 'function') {
+        opts.signal.removeEventListener('abort', parentAbort);
+        parentAbort = null;
+      }
+    }
     const timeoutPromise = new Promise(function (_, reject) {
       timer = setTimeout(function () {
         timedOut = true;
@@ -362,6 +369,7 @@ function request(url, options) {
       const transientNetwork = !error.status && /fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed|CEE_HTTP_TIMEOUT/i.test(errorMessage);
       const retryable = retryableStatus.indexOf(Number(error.status)) !== -1 || transientNetwork || timedOut;
       if (number < maxAttempts && retryable && !(opts.signal && opts.signal.aborted)) {
+        cleanup();
         const retryAfter = Number(error.retryAfterMs) || 0;
         const delay = Math.min(500, Math.max(150, retryAfter || 200 * number));
         ensureBudget(opts.deadline, 'HTTP retry');
@@ -372,12 +380,7 @@ function request(url, options) {
       }
       console.log('[CEE HTTP]', 'failed', Date.now() - startedAt, 'ms', requestLabel);
       throw error;
-    }).finally(function () {
-      if (timer !== undefined) clearTimeout(timer);
-      if (parentAbort && opts.signal && typeof opts.signal.removeEventListener === 'function') {
-        opts.signal.removeEventListener('abort', parentAbort);
-      }
-    });
+    }).finally(cleanup);
   }
   return attempt(1);
 }
