@@ -63,6 +63,7 @@ async function main() {
     if (value.includes('/transcodedFiles/id/10')) {
       return response([
         { videoUrl: 'https://cdn.example/movie-720.mp4', resolution: '720p', container: 'mp4' },
+        { videoUrl: 'https://cdn.example/movie-4k.mp4', resolution: '2160p', container: 'mp4' },
         { videoUrl: 'https://cdn.example/movie-1080.mp4', resolution: '1080p', container: 'mp4' },
         { videoUrl: 'https://cdn.example/movie-1080.mp4', resolution: '1080p', container: 'mp4' }
       ]);
@@ -87,8 +88,8 @@ async function main() {
 
   try {
     const movie = await getStreams({ tmdbId: 'tt0133093', mediaType: 'movie' });
-    assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 1080p', 'CEE · 720p']);
-    assert.strictEqual(movie.length, 2, 'duplicate stream URLs must be removed');
+    assert.deepStrictEqual(movie.map((item) => item.name), ['CEE · 4K', 'CEE · 1080p', 'CEE · 720p']);
+    assert.strictEqual(movie.length, 3, 'duplicate stream URLs must be removed while retaining available 4K sources');
     assert.strictEqual(detailsRequests, 0, 'playback resolution must not wait for unused allVideoInfo metadata');
     assert.deepStrictEqual(Object.keys(movie[0]).sort(), ['name', 'title', 'url'],
       'CEE stream objects must match the Cinemana name/title/url schema');
@@ -123,7 +124,7 @@ async function main() {
     assert.strictEqual(detailsRequests, 0, 'optional details endpoint must remain outside the playback path');
 
     const tmdbMovie = await getStreams({ tmdbId: 603, mediaType: 'movie' });
-    assert.strictEqual(tmdbMovie.length, 2, 'numeric TMDB IDs must resolve with the injected key');
+    assert.strictEqual(tmdbMovie.length, 3, 'numeric TMDB IDs must resolve with the injected key');
 
     const episode = await getStreams({
       tmdbId: 'tt1111111',
@@ -140,6 +141,34 @@ async function main() {
       episode: 2
     });
     assert.strictEqual(ambiguous.length, 0, 'ambiguous episode matches must be rejected');
+
+    const originalFetchForParallel = global.fetch;
+    let activeSearches = 0;
+    let maxActiveSearches = 0;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt4444444')) {
+        return response({ meta: { name: 'Concurrent Test', original_name: 'Concurrent Alias', year: '2023' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        activeSearches++;
+        maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        activeSearches--;
+        return response([{
+          nb: 44, kind: 1, en_title: 'Concurrent Test', year: '2023',
+          imdbUrlRef: 'tt4444444'
+        }]);
+      }
+      if (value.includes('/transcoddedFiles/id/44')) {
+        return response([{ videoUrl: 'https://cdn.example/concurrent.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const parallelResult = await getStreams({ tmdbId: 'tt4444444', mediaType: 'movie' });
+    assert.strictEqual(parallelResult.length, 1, 'parallel title search should still resolve the correct stream');
+    assert.ok(maxActiveSearches >= 2, 'CEE title variants should be queried concurrently');
+    global.fetch = originalFetchForParallel;
 
     console.log('CEE provider tests passed');
   } finally {
