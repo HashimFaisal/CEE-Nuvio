@@ -68,10 +68,12 @@ function createProviderEngine(options) {
   const schedule = config.setTimeout || (typeof setTimeout === 'function' ? setTimeout : function () { return null; });
   const cancel = config.clearTimeout || (typeof clearTimeout === 'function' ? clearTimeout : function () {});
   const health = new Map();
+  const providerById = new Map();
 
   providers.forEach(provider => {
     if (!provider || !/^[a-z0-9][a-z0-9._-]*$/i.test(String(provider.id || '')) ||
         typeof provider.getStreams !== 'function') throw new TypeError('Invalid provider contract');
+    providerById.set(provider.id, provider);
     if (!health.has(provider.id)) health.set(provider.id, {
       failures: 0, openUntil: 0, attempts: 0, successes: 0, validStreams: 0,
       emptyResponses: 0, errorCount: 0, timeoutCount: 0, rejectedStreams: 0,
@@ -194,9 +196,25 @@ function createProviderEngine(options) {
     results.forEach(result => (result && result.streams || []).forEach(stream => {
       if (seen.has(stream.url)) return;
       seen.add(stream.url);
-      streams.push(stream);
+      streams.push(Object.assign({}, stream, { _providerId: result.providerId }));
     }));
-    streams.sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+    streams.sort((a, b) => {
+      const qualityDifference = qualityRank(b.quality) - qualityRank(a.quality);
+      if (qualityDifference) return qualityDifference;
+      const providerA = providerById.get(a._providerId);
+      const providerB = providerById.get(b._providerId);
+      const priorityDifference = Number(providerB && providerB.priority || 0) - Number(providerA && providerA.priority || 0);
+      if (priorityDifference) return priorityDifference;
+      const healthA = health.get(a._providerId);
+      const healthB = health.get(b._providerId);
+      const productiveA = healthA && healthA.attempts ? healthA.successes / healthA.attempts : 0;
+      const productiveB = healthB && healthB.attempts ? healthB.successes / healthB.attempts : 0;
+      if (productiveB !== productiveA) return productiveB - productiveA;
+      const latencyA = healthA && healthA.latencyEwmaMs != null ? healthA.latencyEwmaMs : Infinity;
+      const latencyB = healthB && healthB.latencyEwmaMs != null ? healthB.latencyEwmaMs : Infinity;
+      return latencyA - latencyB;
+    });
+    streams.forEach(stream => { delete stream._providerId; });
     return { streams, providers: results };
   }
 

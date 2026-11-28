@@ -51,7 +51,7 @@ async function main() {
     }
 
     if (value.includes('/videoSeason/id/20')) {
-      return response([{ nb: 203, season: 2, episodeNummer: 3 }]);
+      return response([{ nb: 203, description: 'S02E03' }]);
     }
     if (value.includes('/videoSeason/id/30')) {
       return response([
@@ -260,6 +260,58 @@ async function main() {
     assert.strictEqual(metadataLookups, 0,
       'supplied metadata fast path must skip TMDB/Cinemeta lookup');
     global.fetch = originalFetchForSuppliedMeta;
+
+    const originalFetchForRetry = global.fetch;
+    let transientAttempts = 0;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt6666666')) {
+        return response({ meta: { name: 'Retry Test', year: '2024' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        transientAttempts++;
+        if (transientAttempts === 1) return response({ error: 'temporary upstream error' }, false, 503);
+        return response([{ nb: 66, kind: 1, en_title: 'Retry Test', year: '2024', imdbUrlRef: 'tt6666666' }]);
+      }
+      if (value.includes('/transcoddedFiles/id/66')) {
+        return response([{ videoUrl: 'https://cdn.example/retry.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const retriedStreams = await getStreams({ tmdbId: 'tt6666666', mediaType: 'movie' });
+    assert.strictEqual(retriedStreams.length, 1, 'transient 503 responses should be retried once');
+    assert.strictEqual(transientAttempts, 2, 'GET retry policy must be bounded to one retry');
+    global.fetch = originalFetchForRetry;
+
+    const originalFetchForPageTwo = global.fetch;
+    let pageTwoRequested = false;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt7777777')) {
+        return response({ meta: { name: 'Page Two Search', original_name: 'Page Two Search', year: '2024' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        if (value.includes('page=1')) {
+          pageTwoRequested = true;
+          return response([{ nb: 77, kind: 1, en_title: 'Page Two Search', year: '2024', imdbUrlRef: 'tt7777777' }]);
+        }
+        if (value.includes('page=0') && value.includes('Page%20Two%20Search')) {
+          return response(Array.from({ length: 12 }, function (_, index) {
+            return { nb: 700 + index, kind: 1, en_title: 'Unrelated Result ' + index, year: '2024' };
+          }));
+        }
+        return response([]);
+      }
+      if (value.includes('/transcoddedFiles/id/77')) {
+        return response([{ videoUrl: 'https://cdn.example/page-two.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const pageTwoStreams = await getStreams({ tmdbId: 'tt7777777', mediaType: 'movie' });
+    assert.strictEqual(pageTwoStreams.length, 1,
+      'a matching CEE title on page 2 should be found when page 1 is full and inconclusive');
+    assert.strictEqual(pageTwoRequested, true, 'second-page search should only be attempted after a full inconclusive first page');
+    global.fetch = originalFetchForPageTwo;
 
     console.log('CEE provider tests passed');
   } finally {
