@@ -358,7 +358,8 @@ function request(url, options) {
       });
     });
     return Promise.race([work, timeoutPromise]).catch(function (error) {
-      const transientNetwork = !error.status && !/aborted|aborterror|CEE time budget exceeded/i.test(String(error && error.message || error));
+      const errorMessage = String(error && error.message || error);
+      const transientNetwork = !error.status && /fetch failed|networkerror|enotfound|econnrefused|etimedout|network request failed|CEE_HTTP_TIMEOUT/i.test(errorMessage);
       const retryable = retryableStatus.indexOf(Number(error.status)) !== -1 || transientNetwork || timedOut;
       if (number < maxAttempts && retryable && !(opts.signal && opts.signal.aborted)) {
         const retryAfter = Number(error.retryAfterMs) || 0;
