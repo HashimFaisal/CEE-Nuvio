@@ -192,6 +192,40 @@ async function main() {
       'fallback search should run only after the primary title query fails to find a strong match');
     global.fetch = originalFetchForFallback;
 
+    const originalFetchForParallelFallback = global.fetch;
+    let fallbackStarted = 0;
+    let firstFallbackFinished = false;
+    let fallbacksStartedConcurrently = false;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt4444446')) {
+        return response({ meta: { name: 'Parallel Fallback', original_name: 'Parallel Alias', year: '2025' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        if (value.includes('Parallel%20Fallback%202025') === false &&
+            value.includes('Parallel%20Alias') === false) return response([]);
+        fallbackStarted++;
+        if (fallbackStarted === 2 && !firstFallbackFinished) fallbacksStartedConcurrently = true;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        if (fallbackStarted === 1) firstFallbackFinished = true;
+        return response([{
+          nb: 46, kind: 1, en_title: 'Parallel Fallback', year: '2025',
+          imdbUrlRef: 'tt4444446'
+        }]);
+      }
+      if (value.includes('/transcoddedFiles/id/46')) {
+        return response([{ videoUrl: 'https://cdn.example/parallel-fallback.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const parallelFallbackResult = await getStreams({ tmdbId: 'tt4444446', mediaType: 'movie' });
+    assert.strictEqual(parallelFallbackResult.length, 1,
+      'parallel title fallbacks should still resolve the matching CEE stream');
+    assert.strictEqual(fallbackStarted, 2, 'both fallback title variants should be requested');
+    assert.strictEqual(fallbacksStartedConcurrently, true,
+      'fallback title variants should start concurrently rather than serially');
+    global.fetch = originalFetchForParallelFallback;
+
     const originalFetchForSuppliedMeta = global.fetch;
     let metadataLookups = 0;
     global.fetch = async function (url) {
