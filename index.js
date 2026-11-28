@@ -8,6 +8,13 @@
 
 // Bundled CEE provider engine. Source: engine/provider-engine.js.
 // Nuvio loads a single index.js, so this orchestration layer is bundled here.
+function streamRejectionReason(stream) {
+  if (!stream || typeof stream !== 'object') return 'invalid-item';
+  if (typeof stream.url !== 'string' || !stream.url) return 'missing-url';
+  if (!validStreamUrl(stream.url)) return 'invalid-url';
+  return null;
+}
+
 function createProviderEngine(options) {
   const config = options || {};
   const providers = Array.isArray(config.providers) ? config.providers.slice() : [];
