@@ -38,7 +38,7 @@ The active provider implementation in `index.js` is written independently for th
 
 ## Compatibility notes
 
-The provider uses the Nuvio JavaScript runtime's `fetch`, `Promise`, `Map`, and `Set` support. It intentionally does not depend on `AbortController` or native timers, because the extracted CEE runtime notes identify QuickJS targets without those APIs.
+The provider uses the Nuvio JavaScript runtime's `fetch`, `Promise`, `Map`, and `Set` support. Request cancellation is opportunistic when `AbortController` is available; the provider still handles runtimes where it is unavailable. The provider deadline uses the runtime's timer support.
 
 ## Offline regression tests
 
