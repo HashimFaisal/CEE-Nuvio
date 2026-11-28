@@ -226,6 +226,43 @@ async function main() {
       'fallback title variants should start concurrently rather than serially');
     global.fetch = originalFetchForParallelFallback;
 
+    const originalFetchForFastFallback = global.fetch;
+    let slowAliasFinished = false;
+    global.fetch = async function (url) {
+      const value = String(url);
+      if (value.includes('/meta/movie/tt4444447')) {
+        return response({ meta: { name: 'Fast External Fallback', original_name: 'Slow Alias', year: '2025' } });
+      }
+      if (value.includes('/AdvancedSearch')) {
+        if (value.includes('Fast%20External%20Fallback%202025')) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          slowAliasFinished = true;
+          return response([]);
+        }
+        if (value.includes('Slow%20Alias')) {
+          return response([{
+            nb: 47, kind: 1, en_title: 'Fast External Fallback', year: '2025',
+            imdbUrlRef: 'tt4444447'
+          }]);
+        }
+        return response([]);
+      }
+      if (value.includes('/transcoddedFiles/id/47')) {
+        return response([{ videoUrl: 'https://cdn.example/fast-external-fallback.mp4', resolution: '1080p' }]);
+      }
+      return response({ error: 'not found' }, false, 404);
+    };
+    const fastFallbackStarted = Date.now();
+    const fastFallbackStreams = await getStreams({ tmdbId: 'tt4444447', mediaType: 'movie' });
+    const fastFallbackElapsed = Date.now() - fastFallbackStarted;
+    assert.strictEqual(fastFallbackStreams.length, 1,
+      'an exact external-ID fallback should resolve the stream');
+    assert.strictEqual(slowAliasFinished, false,
+      'an exact external-ID fallback must not wait for a slower alias search');
+    assert.ok(fastFallbackElapsed < 220,
+      'an exact external-ID fallback should return before the slow alias finishes');
+    global.fetch = originalFetchForFastFallback;
+
     const originalFetchForSuppliedMeta = global.fetch;
     let metadataLookups = 0;
     global.fetch = async function (url) {
